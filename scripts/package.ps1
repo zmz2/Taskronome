@@ -23,7 +23,7 @@ function Invoke-Checked {
     Write-Host "`n> $FilePath $($Arguments -join ' ')" -ForegroundColor Cyan
     & $FilePath @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code $LASTEXITCODE: $FilePath $($Arguments -join ' ')"
+        throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($Arguments -join ' ')"
     }
 }
 
