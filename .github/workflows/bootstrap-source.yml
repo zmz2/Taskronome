@@ -1,0 +1,58 @@
+name: Bootstrap implementation source
+
+on:
+  push:
+    branches:
+      - chatgpt/implementation-v1
+    paths:
+      - ".github/workflows/bootstrap-source.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/implementation-v1
+          fetch-depth: 0
+
+      - name: Reconstruct and verify source archive
+        shell: python
+        run: |
+          from pathlib import Path
+          import base64, hashlib, io, tarfile
+
+          parts = sorted(Path("bootstrap").glob("source.part*"))
+          if len(parts) != 20:
+              raise SystemExit(f"expected 20 parts, found {len(parts)}")
+
+          encoded = "".join(p.read_text(encoding="ascii").strip() for p in parts)
+          raw = base64.b64decode(encoded, validate=True)
+          digest = hashlib.sha256(raw).hexdigest()
+          expected = "90f6d1f62c57ce04de52b18a2f6f49fa1692f52e41a389af0471d164a3bde433"
+          if digest != expected:
+              raise SystemExit(f"SHA-256 mismatch: {digest}")
+
+          with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
+              members = archive.getmembers()
+              for member in members:
+                  path = Path(member.name)
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(f"unsafe archive path: {member.name}")
+              archive.extractall(".")
+
+          print(f"extracted {len(members)} entries; SHA-256 {digest}")
+
+      - name: Replace bootstrap payload with implementation
+        shell: bash
+        run: |
+          rm -rf bootstrap
+          rm -f .github/workflows/bootstrap-source.yml
+          git config user.name "Taskronome bootstrap"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: implement Taskronome v1.0"
+          git push origin HEAD:chatgpt/implementation-v1
