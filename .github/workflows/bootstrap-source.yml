@@ -56,3 +56,5 @@ jobs:
           git add -A
           git commit -m "feat: implement Taskronome v1.0"
           git push origin HEAD:chatgpt/implementation-v1
+
+# Retry 2: final payload segment restored and archive hash is still mandatory.
