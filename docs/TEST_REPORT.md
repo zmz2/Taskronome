@@ -11,7 +11,7 @@
 - .NET runtime: 10.0.11 (Microsoft.WindowsDesktop.App)
 - PowerShell: 7.6.4
 - Repository: https://github.com/zmz2/Taskronome.git
-- Validated implementation commit SHA: 668248a63f00f06cbca3000c22cae3f9a6b90d62
+- Validation snapshot: current local Windows worktree after the checkpoint and release-packaging follow-up; the immutable CI commit, run, artifact, and checksum record is maintained in PR #2 rather than copied into this static report
 
 ## Commands executed
 
@@ -31,20 +31,20 @@ The standalone command output is retained in [root-final-commands.log](../artifa
 
 | Gate | Result | Actual evidence |
 |---|---|---|
-| Source audit | Passed | requiredFileCount=24, projectCount=4, four lock files, testAttributeCount=85, no source markers, no developer absolute paths; [source-audit.json](../artifacts/source-audit.json) |
+| Source audit | Passed | requiredFileCount=24, projectCount=4, four lock files, testAttributeCount=87, no source markers, no developer absolute paths; [source-audit.json](../artifacts/source-audit.json) |
 | Locked restore | Passed | dotnet restore --locked-mode and the bootstrap gate both completed successfully |
 | Format | Passed | dotnet format Taskronome.sln --verify-no-changes --no-restore --severity warn |
 | Release build | Passed | dotnet build Taskronome.sln --configuration Release --no-restore; 0 warnings, 0 errors |
-| Deterministic tests | Passed | 86 total, 86 executed, 86 passed, 0 failed, 0 skipped; [final-tests.trx](../artifacts/test-results/final-tests.trx) and the project-level root command TRX |
-| Core line coverage | Passed | 95.51%, threshold 85%; coverage.cobertura.xml below artifacts/test-results/ |
-| Core branch coverage | Passed | 78.78%, threshold 75%; coverage.cobertura.xml below artifacts/test-results/ |
-| Real 2s/3s scenario | Passed | 9,862.6 ms wall elapsed, 5,681.6 ms recorded work, 6 segments, 20 events; [scenario-result.json](../artifacts/scenario/scenario-result.json) |
+| Deterministic tests | Passed | 88 total, 88 executed, 88 passed, 0 failed, 0 skipped; [final-tests.trx](../artifacts/test-results/final-tests.trx) and the project-level root command TRX |
+| Core line coverage | Passed | 95.62%, threshold 85%; coverage.cobertura.xml below artifacts/test-results/ |
+| Core branch coverage | Passed | 81.84%, threshold 75%; coverage.cobertura.xml below artifacts/test-results/ |
+| Real 2s/3s scenario | Passed | 9,842.9 ms wall elapsed, 5,687.4 ms recorded work, 6 segments, 20 events; [scenario-result.json](../artifacts/scenario/scenario-result.json) |
 | Published UI smoke | Passed | Actual WPF self-contained EXE started and exited with code 0; smoke result passed; [summary.json](../artifacts/ui-smoke/summary.json) |
 | Single-instance smoke | Passed | First process exit 0, second process exit 0, second launch signalled the first instance; [summary.json](../artifacts/ui-smoke/summary.json) |
 | Portable ZIP E2E | Passed | ZIP was extracted to a fresh directory and the extracted self-contained EXE returned 0 with a passing smoke result; [portable-e2e-result.json](../artifacts/portable-e2e-3bf9e8c7b1d44dbd9e35ff6c4a3cf4b4/portable-e2e-result.json) |
-| GitHub Actions Windows gate | Passed | PR run [33743333633](https://github.com/zmz2/Taskronome/actions/runs/33743333633) completed successfully and uploaded test evidence plus distributable packages |
+| GitHub Actions Windows gate | Passed in the prior validation snapshot | The exact current CI run, uploaded artifact, and its checksum file are recorded in the final PR comment; this committed report intentionally avoids embedding a run ID so documentation commits do not create a run-ID chase |
 
-The test attribute audit found 85 [Fact]/[Theory] attributes; xUnit executed 86 cases because one theory expands to multiple data cases. There were no skipped tests, so no release exception is required.
+The test attribute audit found 87 [Fact]/[Theory] attributes; xUnit executed 88 cases because one theory expands to multiple data cases. There were no skipped tests, so no release exception is required.
 
 ### Scenario observations
 
@@ -110,19 +110,19 @@ The installed self-contained executable ran with a passing smoke result and exit
 - [installed-smoke-result2.json](../artifacts/installer-e2e-final/installed-smoke-result2.json)
 - [uninstall.log](../artifacts/installer-e2e-final/uninstall.log)
 
-The package script also checked the ZIP entries and rejected source, test, artifact, user-data, and developer-absolute-path entries. The package is self-contained and uses the per-user Inno setup configuration in installer/Taskronome.iss.
+The package script also checked the ZIP entries and rejected source, test, artifact, user-data, PDB, and developer-absolute-path entries. The package is self-contained and uses the per-user Inno setup configuration in installer/Taskronome.iss.
 
 ## Packaging and checksums
 
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
-| Taskronome-1.0.0-win-x64-portable.zip | 132,110,139 | 909464b9468c5d6dc3f820ac4c334c5bbd6ee8193b0d8367c4e57b8519467835 |
-| Taskronome-1.0.0-win-x64-setup.exe | 89,220,525 | bfc910381f38a843f204e1d7ff7a7db2288423efc246e8d75743d2dc56ee2417 |
+| Taskronome-1.0.0-win-x64-portable.zip | 132,062,160 | 8c8180d99c0361e92ab175e92bcc203c411646a2d1e30cd87c2a1e4063348b31 |
+| Taskronome-1.0.0-win-x64-setup.exe | 89,174,457 | afd75224de75226252b08272fa07e4ead64c9843f048cbf5253c99be604f22bc |
 
-The package manifest and [SHA256SUMS.txt](../artifacts/dist/SHA256SUMS.txt) were generated by scripts/package.ps1; the manifest records the same byte counts and hashes in [package-manifest.json](../artifacts/dist/package-manifest.json).
+The package manifest and [SHA256SUMS.txt](../artifacts/dist/SHA256SUMS.txt) were generated by scripts/package.ps1; the manifest records the same byte counts and hashes in [package-manifest.json](../artifacts/dist/package-manifest.json). These hashes are local build evidence only, not final CI or formal Release checksums. For an official download, use the `SHA256SUMS.txt` uploaded by the same successful workflow run as the downloaded file.
 
 ## Limitations and delivery state
 
 1. Native Computer Use could not connect because the sky trusted RPC service was not configured. Consequently, the manual Windows checklist items that require visual UI, tray, notifications, power transitions, display changes, or keyboard interaction remain Not run.
 2. The automated WPF smoke path, real monotonic-clock scenario, extracted portable executable, installed executable, and uninstaller all passed. These are process/runtime checks and are intentionally not reported as visual manual passes.
-3. CI run: https://github.com/zmz2/Taskronome/actions/runs/33743333633. Pull Request: https://github.com/zmz2/Taskronome/pull/2. The implementation is not merged into main.
+3. The current CI run, final artifact, and internal `SHA256SUMS.txt` are maintained in the final PR comment rather than copied into this static report; this prevents each documentation-only update from chasing a new run ID. Pull Request: https://github.com/zmz2/Taskronome/pull/2. The implementation is not merged into main.

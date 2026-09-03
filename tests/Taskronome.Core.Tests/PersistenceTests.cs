@@ -1,11 +1,14 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Taskronome.Core;
 
 namespace Taskronome.Core.Tests;
 
 public sealed class PersistenceTests
 {
+    private static readonly JsonSerializerOptions CorruptDataSerializerOptions = CreateCorruptDataSerializerOptions();
+
     [Fact]
     public void SaveAndLoad_RoundTripsAllDurableState()
     {
@@ -175,6 +178,48 @@ public sealed class PersistenceTests
         }
     }
 
+    [Fact]
+    public void CorruptCombinedCheckpoint_IsRecoveredFromGoodBackup()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var store = new JsonFileDataStore(directory);
+            store.Save(new TaskronomeData { Tasks = new List<TaskItem> { NewTask("good backup") } });
+            store.Save(new TaskronomeData { Tasks = new List<TaskItem> { NewTask("current") } });
+
+            var corruptTask = NewTask("corrupt checkpoint");
+            corruptTask.SliceDuration = TimeSpan.FromMinutes(1);
+            var corruptData = new TaskronomeData
+            {
+                Tasks = new List<TaskItem> { corruptTask },
+                Checkpoint = new RotationCheckpoint
+                {
+                    State = RotationState.PausedManual,
+                    CurrentTaskId = corruptTask.Id,
+                    Remaining = TimeSpan.FromSeconds(40),
+                    CurrentRunAccumulated = TimeSpan.FromSeconds(21),
+                },
+            };
+            File.WriteAllText(
+                store.DataFilePath,
+                JsonSerializer.Serialize(corruptData, CorruptDataSerializerOptions));
+
+            var result = store.Load();
+
+            Assert.True(result.RecoveredFromCorruption);
+            Assert.True(result.RecoveredFromBackup);
+            Assert.NotNull(result.CorruptFilePath);
+            Assert.True(File.Exists(result.CorruptFilePath));
+            Assert.Equal("good backup", Assert.Single(result.Data.Tasks).Name);
+            Assert.Equal("good backup", Assert.Single(store.Load().Data.Tasks).Name);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     private static string CreateTemporaryDirectory()
     {
         return Path.Combine(Path.GetTempPath(), $"TaskronomeTests-{Guid.NewGuid():N}");
@@ -191,5 +236,16 @@ public sealed class PersistenceTests
             CreatedAtUtc = DateTimeOffset.Parse("2026-09-03T00:00:00Z", CultureInfo.InvariantCulture),
             UpdatedAtUtc = DateTimeOffset.Parse("2026-09-03T00:00:00Z", CultureInfo.InvariantCulture),
         };
+    }
+
+    private static JsonSerializerOptions CreateCorruptDataSerializerOptions()
+    {
+        var options = new JsonSerializerOptions
+        {
+            NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
+            WriteIndented = true,
+        };
+        options.Converters.Add(new JsonStringEnumConverter());
+        return options;
     }
 }

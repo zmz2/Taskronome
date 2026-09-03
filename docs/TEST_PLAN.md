@@ -34,7 +34,7 @@ The smoke test does not certify that a person saw the window, notification cente
 
 ## Packaging checks
 
-`scripts/package.ps1` restores locked dependencies, publishes self-contained `win-x64`, creates the portable ZIP, invokes Inno Setup for the per-user installer, rejects development/user-data paths in the ZIP, and writes `SHA256SUMS.txt` plus `package-manifest.json`.
+`scripts/package.ps1` restores locked dependencies, publishes self-contained `win-x64`, excludes PDB files, creates the portable ZIP, invokes Inno Setup for the per-user installer, rejects development/user-data/PDB paths in the ZIP, and writes `SHA256SUMS.txt` plus `package-manifest.json`. For an official download, verify the file against the `SHA256SUMS.txt` uploaded by the same CI or Release workflow that produced it; local build hashes are not official release checksums.
 
 ## Reproduction
 

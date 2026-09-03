@@ -867,15 +867,7 @@ public sealed class RotationEngine : IRotationEngine
 
     private static void ValidateCheckpointForTaskLocked(RotationCheckpoint checkpoint, TaskItem task)
     {
-        if (!Enum.IsDefined(checkpoint.State) ||
-            (checkpoint.StateBeforeSystemPause is not null &&
-             !Enum.IsDefined(checkpoint.StateBeforeSystemPause.Value)) ||
-            (checkpoint.SystemPauseReason is not null &&
-             !Enum.IsDefined(checkpoint.SystemPauseReason.Value)) ||
-            checkpoint.Remaining < TimeSpan.Zero ||
-            checkpoint.Remaining > task.SliceDuration ||
-            checkpoint.CurrentRunAccumulated < TimeSpan.Zero ||
-            checkpoint.CurrentRunAccumulated > task.SliceDuration)
+        if (!CheckpointValidator.FitsTaskSlice(checkpoint, task))
         {
             throw new InvalidDataException("The rotation checkpoint is invalid for its current task.");
         }

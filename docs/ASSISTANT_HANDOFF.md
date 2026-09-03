@@ -42,7 +42,7 @@ The package directory is `artifacts/dist/` and contains:
 - `SHA256SUMS.txt`;
 - `package-manifest.json`.
 
-The installer is per-user (`PrivilegesRequired=lowest`) and installs under `%LOCALAPPDATA%\Programs\Taskronome`. It does not remove `%LOCALAPPDATA%\Taskronome` during uninstall.
+The portable package excludes PDB files. The installer is per-user (`PrivilegesRequired=lowest`) and installs under `%LOCALAPPDATA%\Programs\Taskronome`. It does not remove `%LOCALAPPDATA%\Taskronome` during uninstall. Official downloads must be checked against the `SHA256SUMS.txt` uploaded by the same successful workflow that produced the files; local hashes are build evidence only.
 
 ## Known environment-dependent checks
 

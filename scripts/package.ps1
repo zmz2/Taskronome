@@ -60,6 +60,7 @@ function Assert-PortableZip {
             $normalized = $entry.FullName.Replace("\", "/")
             if ($normalized -match "(^|/)(src|tests|artifacts|bin|obj)(/|$)" -or
                 $normalized -match "(^|/)(data\.json|data\.json\.bak|logs)(/|$)" -or
+                $normalized -match "\.pdb$" -or
                 $normalized -match "[A-Za-z]:/" -or
                 $normalized.Contains($taskronomeDevPath) -or
                 $normalized.Contains($devUsersPath)) {
@@ -99,6 +100,12 @@ try {
         Copy-Item -LiteralPath (Join-Path $repoRoot $file) -Destination $publish -Force
     }
     Copy-Item -LiteralPath (Join-Path $repoRoot "docs\MANUAL_TEST_CHECKLIST.md") -Destination $publish -Force
+
+    $publishSymbols = @(Get-ChildItem -LiteralPath $publish -Filter "*.pdb" -Recurse -File)
+    foreach ($symbolFile in $publishSymbols) {
+        Remove-Item -LiteralPath $symbolFile.FullName -Force
+    }
+    Write-Host "Excluded $($publishSymbols.Count) PDB file(s) from release packages."
 
     $portableName = "Taskronome-$Version-win-x64-portable.zip"
     $portablePath = Join-Path $dist $portableName

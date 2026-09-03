@@ -24,4 +24,4 @@ Only `Running` adds actual work time. Each turn requires an in-app confirmation.
 
 ## Package contract
 
-`artifacts/dist/` contains a self-contained `Taskronome-<version>-win-x64-portable.zip`, a per-user `Taskronome-<version>-win-x64-setup.exe`, `SHA256SUMS.txt`, and `package-manifest.json`. The installer uses `PrivilegesRequired=lowest` and preserves `%LOCALAPPDATA%\Taskronome` on uninstall.
+`artifacts/dist/` contains a self-contained `Taskronome-<version>-win-x64-portable.zip` without PDB files, a per-user `Taskronome-<version>-win-x64-setup.exe`, `SHA256SUMS.txt`, and `package-manifest.json`. The installer uses `PrivilegesRequired=lowest` and preserves `%LOCALAPPDATA%\Taskronome` on uninstall. Official downloads must be checked against the `SHA256SUMS.txt` uploaded by the same successful workflow that produced the files; local hashes are build evidence only.

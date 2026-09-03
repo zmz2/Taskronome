@@ -148,6 +148,33 @@ public sealed class RotationCheckpoint
     public DateTimeOffset SavedAtUtc { get; set; }
 }
 
+internal static class CheckpointValidator
+{
+    public static bool HasValidStateValues(RotationCheckpoint checkpoint)
+    {
+        return checkpoint.SchemaVersion is 1 &&
+               Enum.IsDefined(checkpoint.State) &&
+               (checkpoint.StateBeforeSystemPause is null ||
+                Enum.IsDefined(checkpoint.StateBeforeSystemPause.Value)) &&
+               (checkpoint.SystemPauseReason is null ||
+                Enum.IsDefined(checkpoint.SystemPauseReason.Value)) &&
+               checkpoint.Remaining >= TimeSpan.Zero &&
+               checkpoint.CurrentRunAccumulated >= TimeSpan.Zero;
+    }
+
+    public static bool FitsTaskSlice(RotationCheckpoint checkpoint, TaskItem task)
+    {
+        if (!HasValidStateValues(checkpoint) ||
+            checkpoint.Remaining > task.SliceDuration ||
+            checkpoint.CurrentRunAccumulated > task.SliceDuration)
+        {
+            return false;
+        }
+
+        return checkpoint.Remaining <= task.SliceDuration - checkpoint.CurrentRunAccumulated;
+    }
+}
+
 public sealed record RotationStatus(
     long Revision,
     RotationState State,

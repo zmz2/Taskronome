@@ -271,6 +271,23 @@ public sealed class InvariantTests
     }
 
     [Fact]
+    public void CombinedCheckpointBudget_IsRejectedEvenWhenEachValueFits()
+    {
+        var clock = new FakeClock();
+        var task = NewTask("combined checkpoint", 0);
+        var checkpoint = new RotationCheckpoint
+        {
+            State = RotationState.PausedManual,
+            CurrentTaskId = task.Id,
+            Remaining = TimeSpan.FromSeconds(40),
+            CurrentRunAccumulated = TimeSpan.FromSeconds(21),
+        };
+        var engine = CreateEngine(clock);
+
+        Assert.Throws<InvalidDataException>(() => engine.Load(new[] { task }, null, checkpoint));
+    }
+
+    [Fact]
     public void WrapAroundSelection_SkipsCompletedAndDisabledTasks()
     {
         var clock = new FakeClock();

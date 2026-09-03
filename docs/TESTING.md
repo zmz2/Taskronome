@@ -53,7 +53,7 @@ The gate requires:
 pwsh ./scripts/package.ps1 -Version 1.0.0
 ```
 
-This creates a portable ZIP, a per-user Inno Setup installer, `SHA256SUMS.txt` and `package-manifest.json`. The installer is named `Taskronome-<version>-win-x64-setup.exe`.
+This creates a portable ZIP without PDB files, a per-user Inno Setup installer, `SHA256SUMS.txt` and `package-manifest.json`. The installer is named `Taskronome-<version>-win-x64-setup.exe`. For an official download, use the `SHA256SUMS.txt` from the same successful CI or Release workflow as the downloaded file; local hashes are local build evidence only.
 
 ## What still requires a human Windows session
 

@@ -8,6 +8,9 @@ public sealed class SingleInstanceService : IDisposable
 {
     private const string MutexName = "Local\\Taskronome-2C79E4E6-78DE-4E6D-B167-471906B81E50";
     private const string PipeName = "Taskronome-Activation-2C79E4E6-78DE-4E6D-B167-471906B81E50";
+    private const int SignalAttemptCount = 3;
+    private const int SignalConnectTimeoutMilliseconds = 500;
+    private const int SignalRetryDelayMilliseconds = 100;
 
     private readonly FileLogger _logger;
     private readonly Mutex? _mutex;
@@ -54,25 +57,33 @@ public sealed class SingleInstanceService : IDisposable
 
     public static bool SignalExistingInstance()
     {
-        try
+        for (var attempt = 0; attempt < SignalAttemptCount; attempt++)
         {
-            using var client = new NamedPipeClientStream(
-                ".",
-                PipeName,
-                PipeDirection.Out,
-                PipeOptions.Asynchronous);
-            client.Connect(timeout: 1000);
-            using var writer = new StreamWriter(client, new UTF8Encoding(false), leaveOpen: false)
+            try
             {
-                AutoFlush = true,
-            };
-            writer.WriteLine("SHOW");
-            return true;
+                using var client = new NamedPipeClientStream(
+                    ".",
+                    PipeName,
+                    PipeDirection.Out,
+                    PipeOptions.Asynchronous);
+                client.Connect(timeout: SignalConnectTimeoutMilliseconds);
+                using var writer = new StreamWriter(client, new UTF8Encoding(false), leaveOpen: false)
+                {
+                    AutoFlush = true,
+                };
+                writer.WriteLine("SHOW");
+                return true;
+            }
+            catch (Exception exception) when (exception is IOException or TimeoutException or UnauthorizedAccessException)
+            {
+                if (attempt + 1 < SignalAttemptCount)
+                {
+                    Thread.Sleep(SignalRetryDelayMilliseconds);
+                }
+            }
         }
-        catch (Exception exception) when (exception is IOException or TimeoutException or UnauthorizedAccessException)
-        {
-            return false;
-        }
+
+        return false;
     }
 
     private async Task ListenAsync(Action activationAction, CancellationToken cancellationToken)

@@ -56,7 +56,7 @@ python .\scripts\assistant-source-audit.py
 pwsh ./scripts/package.ps1 -Version 1.0.0
 ```
 
-安装器使用 Inno Setup，默认安装到当前用户的 `%LOCALAPPDATA%\Programs\Taskronome`，不请求管理员权限。产物和 SHA-256 校验值位于 `artifacts/dist/`，文件名为 `Taskronome-1.0.0-win-x64-portable.zip` 与 `Taskronome-1.0.0-win-x64-setup.exe`。
+安装器使用 Inno Setup，默认安装到当前用户的 `%LOCALAPPDATA%\Programs\Taskronome`，不请求管理员权限。产物和 SHA-256 校验值位于 `artifacts/dist/`，文件名为 `Taskronome-1.0.0-win-x64-portable.zip` 与 `Taskronome-1.0.0-win-x64-setup.exe`。正式下载时，应使用生成这些文件的同一次 CI 或 Release workflow 所上传的 `SHA256SUMS.txt`；本地构建生成的哈希仅用于本地验证。
 
 ## 项目结构
 

@@ -292,22 +292,14 @@ public sealed class JsonFileDataStore : IStateStore
 
         if (data.Checkpoint is not null)
         {
-            if (data.Checkpoint.SchemaVersion is < 1 or > 1 ||
-                !Enum.IsDefined(data.Checkpoint.State) ||
-                (data.Checkpoint.StateBeforeSystemPause is not null &&
-                 !Enum.IsDefined(data.Checkpoint.StateBeforeSystemPause.Value)) ||
-                (data.Checkpoint.SystemPauseReason is not null &&
-                 !Enum.IsDefined(data.Checkpoint.SystemPauseReason.Value)) ||
-                data.Checkpoint.Remaining < TimeSpan.Zero ||
-                data.Checkpoint.CurrentRunAccumulated < TimeSpan.Zero)
+            if (!CheckpointValidator.HasValidStateValues(data.Checkpoint))
             {
                 throw new InvalidDataException("The data file contained an invalid rotation checkpoint.");
             }
 
             var checkpointTask = data.Tasks.FirstOrDefault(task => task.Id == data.Checkpoint.CurrentTaskId);
             if (checkpointTask is not null &&
-                (data.Checkpoint.Remaining > checkpointTask.SliceDuration ||
-                 data.Checkpoint.CurrentRunAccumulated > checkpointTask.SliceDuration))
+                !CheckpointValidator.FitsTaskSlice(data.Checkpoint, checkpointTask))
             {
                 throw new InvalidDataException("The data file contained a checkpoint beyond the current slice.");
             }
