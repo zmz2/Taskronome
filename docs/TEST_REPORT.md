@@ -11,7 +11,7 @@
 - .NET runtime: 10.0.11 (Microsoft.WindowsDesktop.App)
 - PowerShell: 7.6.4
 - Repository: https://github.com/zmz2/Taskronome.git
-- Validated implementation commit SHA: recorded in the delivery commit immediately before the report-only evidence commit
+- Validated implementation commit SHA: 3053c795313c550464464c3aa5f421ae70ce1171
 
 ## Commands executed
 
@@ -125,4 +125,3 @@ The package manifest and [SHA256SUMS.txt](../artifacts/dist/SHA256SUMS.txt) were
 1. Native Computer Use could not connect because the sky trusted RPC service was not configured. Consequently, the manual Windows checklist items that require visual UI, tray, notifications, power transitions, display changes, or keyboard interaction remain Not run.
 2. The automated WPF smoke path, real monotonic-clock scenario, extracted portable executable, installed executable, and uninstaller all passed. These are process/runtime checks and are intentionally not reported as visual manual passes.
 3. CI and Pull Request URLs are added here after the branch is pushed and the Actions run is observed. The implementation is not merged into main.
-
