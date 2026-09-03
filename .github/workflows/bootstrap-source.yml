@@ -93,12 +93,14 @@ jobs:
       - name: Replace bootstrap payload with implementation
         shell: bash
         run: |
+          # Workflow files are committed separately through the authenticated GitHub connector.
+          # GitHub correctly rejects workflow creation by the restricted Actions token.
+          rm -f .github/workflows/ci.yml
           rm -rf bootstrap
-          rm -f .github/workflows/bootstrap-source.yml
           git config user.name "Taskronome bootstrap"
           git config user.email "actions@users.noreply.github.com"
           git add -A
-          git commit -m "feat: implement Taskronome v1.0"
+          git commit -m "feat: implement Taskronome v1.0 source"
           git push origin HEAD:chatgpt/implementation-v1
 
-# Retry 5: split and verify both repaired payload segments before extraction.
+# Retry 6: commit verified source without modifying workflow files.
