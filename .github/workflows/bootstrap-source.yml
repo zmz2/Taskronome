@@ -25,11 +25,22 @@ jobs:
           from pathlib import Path
           import base64, hashlib, io, tarfile
 
-          parts = sorted(Path("bootstrap").glob("source.part*"))
-          if len(parts) != 20:
-              raise SystemExit(f"expected 20 parts, found {len(parts)}")
+          names = [f"source.part{i:02d}" for i in range(17)]
+          names += ["source.part17a", "source.part17b", "source.part18", "source.part19"]
+          expected_sizes = [6000] * 17 + [3000, 3000, 6000, 1452]
+          parts = [Path("bootstrap") / name for name in names]
 
-          encoded = "".join(p.read_text(encoding="ascii").strip() for p in parts)
+          for path, expected_size in zip(parts, expected_sizes, strict=True):
+              if not path.is_file():
+                  raise SystemExit(f"missing payload segment: {path}")
+              actual_size = len(path.read_text(encoding="ascii"))
+              if actual_size != expected_size:
+                  raise SystemExit(f"payload segment size mismatch: {path} = {actual_size}, expected {expected_size}")
+
+          encoded = "".join(path.read_text(encoding="ascii") for path in parts)
+          if len(encoded) != 115452:
+              raise SystemExit(f"encoded payload length mismatch: {len(encoded)}")
+
           raw = base64.b64decode(encoded, validate=True)
           digest = hashlib.sha256(raw).hexdigest()
           expected = "90f6d1f62c57ce04de52b18a2f6f49fa1692f52e41a389af0471d164a3bde433"
@@ -57,4 +68,4 @@ jobs:
           git commit -m "feat: implement Taskronome v1.0"
           git push origin HEAD:chatgpt/implementation-v1
 
-# Retry 2: final payload segment restored and archive hash is still mandatory.
+# Retry 3: split and size-check segment 17 before mandatory archive hash verification.
