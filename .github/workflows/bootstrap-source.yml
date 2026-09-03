@@ -28,14 +28,45 @@ jobs:
           names = [f"source.part{i:02d}" for i in range(17)]
           names += ["source.part17a", "source.part17b", "source.part18", "source.part19"]
           expected_sizes = [6000] * 17 + [3000, 3000, 6000, 1452]
+          expected_hashes = [
+              "424d622af0dcb8d87be00c9ee9efb14aee364cd4e717132d28addeedd66cc7c0",
+              "64a2e56a7c416832e32b3d5e3063a121a0b87913471e2d5916f6b8e876877372",
+              "dac45530517399cb46f2eaa0fb320fcefce03da35c6210c07eddf61b256eaad5",
+              "17fe38723d9c6cc9792b1e96b0c88f12a89d26ee70fc493b7b2f537b8f526813",
+              "be6b72d756f6719fcba59a05b54d5b5cc1d0a0918fd5b502b64a4bf2d2e0afbd",
+              "3f6a491f58b748996b22679519ce20e66b3c3b3e6af81f553cd60f9daa038eff",
+              "8f93b891c9d59fdab10a4cb8f91835c69cd77a76d1e318b4766b17d8f16a0ba4",
+              "6e16d877e52431dd80f3ef8c58cb7e58f7e1ca694687a5f444c37954dc4d05b8",
+              "62460ba0006f2fbd45f633380368280cb16c619460c21f3f021ae8ddac130c78",
+              "2e699941c36e27151b7dce26d2829d14e4a842d2ed84c792ff656fd655ca0e24",
+              "0666c9c22ae06911cd8d6375fc3584fe538ce98e0f30d72e233333165ac6f8ed",
+              "d17e8fdeb171fa3e9c7afa924960249ed45d9c1f0b11f488716263ed09fb8437",
+              "ff793bb09cde042abb3d9a99856e6a3342d94d2433e4c830d899f80d2f855650",
+              "8af2afed65eeb972da905ac5972a03e4b532bf7d87ea9d585c7af6420eacefdd",
+              "857e9ab154cf3924f2d1e03f257431e766bc58694dce21d8941be10c51d8ebda",
+              "561c63a5a709230f29a756220960136ff34edc0a89ba45238a6ce7ae271d5813",
+              "a5ed7240be70c8568dcfeaeea5498686241a6db1da05a9fefddcf0bd614d4358",
+              "eda0fb59a376955348b137f35e62dd07999586b07a5335c88b90d1c53233da06",
+              "df87d327f15235a84171debbac75cb321107a93364905ef4f3f5fbf164b7abf8",
+              "85da9913eeeebc9ae423544a6f49871d8dd352cc867fe5fa6a5f853e59cdccb0",
+              "07efdc87660da16fbc245793e41016149f8cb89f60d053c990057d6c62bb18be",
+          ]
           parts = [Path("bootstrap") / name for name in names]
+          mismatches = []
 
-          for path, expected_size in zip(parts, expected_sizes, strict=True):
+          for path, expected_size, expected_hash in zip(parts, expected_sizes, expected_hashes, strict=True):
               if not path.is_file():
-                  raise SystemExit(f"missing payload segment: {path}")
-              actual_size = len(path.read_text(encoding="ascii"))
-              if actual_size != expected_size:
-                  raise SystemExit(f"payload segment size mismatch: {path} = {actual_size}, expected {expected_size}")
+                  mismatches.append(f"missing: {path}")
+                  continue
+              raw_part = path.read_bytes()
+              actual_hash = hashlib.sha256(raw_part).hexdigest()
+              if len(raw_part) != expected_size or actual_hash != expected_hash:
+                  mismatches.append(
+                      f"{path}: size {len(raw_part)}/{expected_size}; sha256 {actual_hash}/{expected_hash}"
+                  )
+
+          if mismatches:
+              raise SystemExit("payload segment mismatch:\n" + "\n".join(mismatches))
 
           encoded = "".join(path.read_text(encoding="ascii") for path in parts)
           if len(encoded) != 115452:
@@ -68,4 +99,4 @@ jobs:
           git commit -m "feat: implement Taskronome v1.0"
           git push origin HEAD:chatgpt/implementation-v1
 
-# Retry 3: split and size-check segment 17 before mandatory archive hash verification.
+# Retry 4: verify every payload segment by SHA-256 before archive reconstruction.
