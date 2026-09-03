@@ -11,7 +11,7 @@
 - .NET runtime: 10.0.11 (Microsoft.WindowsDesktop.App)
 - PowerShell: 7.6.4
 - Repository: https://github.com/zmz2/Taskronome.git
-- Validated implementation commit SHA: 3053c795313c550464464c3aa5f421ae70ce1171
+- Validated implementation commit SHA: 668248a63f00f06cbca3000c22cae3f9a6b90d62
 
 ## Commands executed
 
@@ -42,6 +42,7 @@ The standalone command output is retained in [root-final-commands.log](../artifa
 | Published UI smoke | Passed | Actual WPF self-contained EXE started and exited with code 0; smoke result passed; [summary.json](../artifacts/ui-smoke/summary.json) |
 | Single-instance smoke | Passed | First process exit 0, second process exit 0, second launch signalled the first instance; [summary.json](../artifacts/ui-smoke/summary.json) |
 | Portable ZIP E2E | Passed | ZIP was extracted to a fresh directory and the extracted self-contained EXE returned 0 with a passing smoke result; [portable-e2e-result.json](../artifacts/portable-e2e-3bf9e8c7b1d44dbd9e35ff6c4a3cf4b4/portable-e2e-result.json) |
+| GitHub Actions Windows gate | Passed | PR run [33743333633](https://github.com/zmz2/Taskronome/actions/runs/33743333633) completed successfully and uploaded test evidence plus distributable packages |
 
 The test attribute audit found 85 [Fact]/[Theory] attributes; xUnit executed 86 cases because one theory expands to multiple data cases. There were no skipped tests, so no release exception is required.
 
@@ -124,4 +125,4 @@ The package manifest and [SHA256SUMS.txt](../artifacts/dist/SHA256SUMS.txt) were
 
 1. Native Computer Use could not connect because the sky trusted RPC service was not configured. Consequently, the manual Windows checklist items that require visual UI, tray, notifications, power transitions, display changes, or keyboard interaction remain Not run.
 2. The automated WPF smoke path, real monotonic-clock scenario, extracted portable executable, installed executable, and uninstaller all passed. These are process/runtime checks and are intentionally not reported as visual manual passes.
-3. CI and Pull Request URLs are added here after the branch is pushed and the Actions run is observed. The implementation is not merged into main.
+3. CI run: https://github.com/zmz2/Taskronome/actions/runs/33743333633. Pull Request: https://github.com/zmz2/Taskronome/pull/2. The implementation is not merged into main.
