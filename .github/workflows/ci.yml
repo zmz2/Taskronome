@@ -1,0 +1,98 @@
+name: Windows build, test, and package
+
+on:
+  push:
+    branches:
+      - main
+      - "chatgpt/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: taskronome-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-and-package:
+    runs-on: windows-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Verify build, tests, coverage, scenario, publish, and UI startup
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          try {
+            & ./scripts/verify.ps1 *>&1 | Tee-Object -FilePath artifacts/ci-verify.log
+          }
+          catch {
+            $_ | Out-String | Tee-Object -FilePath artifacts/ci-verify.log -Append
+            throw
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build portable package and per-user installer
+        shell: pwsh
+        run: |
+          try {
+            & ./scripts/package.ps1 -Version 1.0.0 *>&1 | Tee-Object -FilePath artifacts/ci-package.log
+          }
+          catch {
+            $_ | Out-String | Tee-Object -FilePath artifacts/ci-package.log -Append
+            throw
+          }
+
+      - name: Add verification details to job summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path artifacts/verification-summary.json) {
+            "## Verification summary" | Add-Content $env:GITHUB_STEP_SUMMARY
+            '```json' | Add-Content $env:GITHUB_STEP_SUMMARY
+            Get-Content artifacts/verification-summary.json | Add-Content $env:GITHUB_STEP_SUMMARY
+            '```' | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+          if (Test-Path artifacts/dist/SHA256SUMS.txt) {
+            "## Package checksums" | Add-Content $env:GITHUB_STEP_SUMMARY
+            '```text' | Add-Content $env:GITHUB_STEP_SUMMARY
+            Get-Content artifacts/dist/SHA256SUMS.txt | Add-Content $env:GITHUB_STEP_SUMMARY
+            '```' | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Upload test and coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: taskronome-test-evidence
+          path: |
+            artifacts/test-results/**
+            artifacts/verification-summary.json
+            artifacts/ci-verify.log
+            artifacts/ci-package.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload distributable packages
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: taskronome-v1.0.0-win-x64
+          path: artifacts/dist/**
+          if-no-files-found: error
+          retention-days: 30
