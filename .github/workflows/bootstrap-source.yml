@@ -25,12 +25,14 @@ jobs:
           from pathlib import Path
           import base64, hashlib, io, tarfile
 
-          names = [f"source.part{i:02d}" for i in range(17)]
+          names = ["source.part00", "source.part01a", "source.part01b"]
+          names += [f"source.part{i:02d}" for i in range(2, 17)]
           names += ["source.part17a", "source.part17b", "source.part18", "source.part19"]
-          expected_sizes = [6000] * 17 + [3000, 3000, 6000, 1452]
+          expected_sizes = [6000, 3000, 3000] + ([6000] * 15) + [3000, 3000, 6000, 1452]
           expected_hashes = [
               "424d622af0dcb8d87be00c9ee9efb14aee364cd4e717132d28addeedd66cc7c0",
-              "64a2e56a7c416832e32b3d5e3063a121a0b87913471e2d5916f6b8e876877372",
+              "85c42fcd9e09e8b02d77ec1e44673fe48e548aa2806f6080c24465f21f065142",
+              "9f5da668c02ea52eb70455d2bdfe66823d55767194a1f2fa4895e96bf43c2b6b",
               "dac45530517399cb46f2eaa0fb320fcefce03da35c6210c07eddf61b256eaad5",
               "17fe38723d9c6cc9792b1e96b0c88f12a89d26ee70fc493b7b2f537b8f526813",
               "be6b72d756f6719fcba59a05b54d5b5cc1d0a0918fd5b502b64a4bf2d2e0afbd",
@@ -99,4 +101,4 @@ jobs:
           git commit -m "feat: implement Taskronome v1.0"
           git push origin HEAD:chatgpt/implementation-v1
 
-# Retry 4: verify every payload segment by SHA-256 before archive reconstruction.
+# Retry 5: split and verify both repaired payload segments before extraction.
