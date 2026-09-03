@@ -1,0 +1,55 @@
+name: Taskronome release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic version without the v prefix"
+        required: true
+        default: "1.0.0"
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Install Python for source audit
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Verify and package release
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          $version = $env:RELEASE_VERSION
+          if ($version.StartsWith('v')) {
+            $version = $version.Substring(1)
+          }
+          ./scripts/bootstrap-and-verify.ps1 -Package -Version $version
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Taskronome ${{ github.ref_name }}
+          files: artifacts/dist/*
+          generate_release_notes: true

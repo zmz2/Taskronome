@@ -1,3 +1,4 @@
+using System.IO;
 using System.IO.Pipes;
 using System.Text;
 
@@ -29,12 +30,15 @@ public sealed class SingleInstanceService : IDisposable
         }
         catch (UnauthorizedAccessException exception)
         {
-            _logger.Error("Unable to create the per-user single-instance mutex.", exception);
-            IsFirstInstance = true;
+            _logger.LogError("Unable to create the per-user single-instance mutex.", exception);
+            AcquisitionFailed = true;
+            IsFirstInstance = false;
         }
     }
 
     public bool IsFirstInstance { get; }
+
+    public bool AcquisitionFailed { get; }
 
     public void StartListening(Action activationAction)
     {
@@ -86,7 +90,7 @@ public sealed class SingleInstanceService : IDisposable
                 await server.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
                 using var reader = new StreamReader(server, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: true);
                 var command = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-                if (string.Equals(command, "SHOW", StringComparison.Ordinal))
+                if (TryParseCommand(command))
                 {
                     activationAction();
                 }
@@ -97,7 +101,7 @@ public sealed class SingleInstanceService : IDisposable
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                _logger.Error("Single-instance activation pipe failed; listener will retry.", exception);
+                _logger.LogError("Single-instance activation pipe failed; listener will retry.", exception);
                 try
                 {
                     await Task.Delay(250, cancellationToken).ConfigureAwait(false);
@@ -109,6 +113,9 @@ public sealed class SingleInstanceService : IDisposable
             }
         }
     }
+
+    public static bool TryParseCommand(string? command) =>
+        string.Equals(command, "SHOW", StringComparison.Ordinal);
 
     public void Dispose()
     {

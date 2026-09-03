@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.IO;
 using System.Text;
 using Taskronome.App.Services;
 using Taskronome.Core;
@@ -11,13 +12,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     private static readonly TimeSpan CheckpointInterval = TimeSpan.FromSeconds(2);
 
     private readonly RotationEngine _engine;
-    private readonly JsonFileDataStore _dataStore;
-    private readonly FileLogger _logger;
+    private readonly IMonotonicClock _clock;
+    private readonly IStateStore _dataStore;
+    private readonly IAppLogger _logger;
     private TaskronomeData _data;
     private RotationStatus _status;
     private RotationState _lastObservedState;
     private Guid? _lastObservedTaskId;
-    private DateTimeOffset _nextCheckpointAtUtc;
+    private long _lastCheckpointTimestamp;
     private int _lastSegmentCount = -1;
     private int _lastEventCount = -1;
     private TaskDisplayRow? _selectedTask;
@@ -46,16 +48,21 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     private string _selectedStatisticsScope;
     private bool _disposed;
 
-    public MainWindowViewModel(JsonFileDataStore dataStore, FileLogger logger)
+    public MainWindowViewModel(
+        IStateStore dataStore,
+        IAppLogger logger,
+        IMonotonicClock? clock = null,
+        RotationOptions? rotationOptions = null)
     {
         _dataStore = dataStore ?? throw new ArgumentNullException(nameof(dataStore));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _clock = clock ?? new SystemMonotonicClock();
 
         var loadResult = _dataStore.Load();
         _data = loadResult.Data;
         _engine = new RotationEngine(
-            new SystemMonotonicClock(),
-            new RotationOptions
+            _clock,
+            rotationOptions ?? new RotationOptions
             {
                 ConfirmationTimeout = TimeSpan.FromSeconds(10),
                 HeartbeatGapThreshold = TimeSpan.FromSeconds(5),
@@ -65,7 +72,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         _lastObservedState = _status.State;
         _lastObservedTaskId = _status.CurrentTaskId;
         _selectedStatisticsScope = NormalizeStatisticsScope(_data.Settings.StatisticsScope);
-        _nextCheckpointAtUtc = DateTimeOffset.UtcNow + CheckpointInterval;
+        _lastCheckpointTimestamp = _clock.GetTimestamp();
 
         StatisticsScopes = new ReadOnlyCollection<StatisticsScopeOption>(new[]
         {
@@ -77,9 +84,16 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
         if (loadResult.RecoveredFromCorruption)
         {
-            FeedbackMessage = loadResult.CorruptFilePath is null
-                ? "数据文件无法读取，应用已使用安全的空白数据启动。"
-                : $"数据文件无法读取，原文件已保留为：{loadResult.CorruptFilePath}";
+            var recoverySource = loadResult.RecoveredFromBackup
+                ? "应用已从上一次成功保存的备份恢复。"
+                : "应用已使用安全的空白数据启动。";
+            var corruptFiles = string.Join(
+                "；",
+                new[] { loadResult.CorruptFilePath, loadResult.CorruptBackupFilePath }
+                    .Where(path => !string.IsNullOrWhiteSpace(path)));
+            FeedbackMessage = string.IsNullOrWhiteSpace(corruptFiles)
+                ? $"数据文件无法读取，{recoverySource}"
+                : $"数据文件无法读取，{recoverySource} 损坏文件已保留：{corruptFiles}";
             FeedbackIsError = true;
             _logger.Warning(FeedbackMessage);
         }
@@ -337,24 +351,31 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         _engine.Pulse();
         RefreshAll(forceCollections: false, allowPresenceEvent: true);
 
-        if (DateTimeOffset.UtcNow >= _nextCheckpointAtUtc)
+        var nowTimestamp = _clock.GetTimestamp();
+        if (_clock.GetElapsedTime(_lastCheckpointTimestamp, nowTimestamp) >= CheckpointInterval)
         {
             PersistNow(silent: true);
-            _nextCheckpointAtUtc = DateTimeOffset.UtcNow + CheckpointInterval;
+            _lastCheckpointTimestamp = nowTimestamp;
         }
     }
 
     public bool AddTask(TaskDraft draft)
     {
         ThrowIfDisposed();
-        if (!CanEditTasks || !ValidateDraft(draft, out var error))
+        if (!CanEditTasks)
         {
-            SetFeedback(error ?? "轮转期间不能修改任务。", true);
+            SetFeedback("轮转期间不能修改任务。", true);
+            return false;
+        }
+
+        if (!ValidateDraft(draft, out var error))
+        {
+            SetFeedback(error ?? "任务输入无效。", true);
             return false;
         }
 
         var tasks = _engine.GetTasks().ToList();
-        var now = DateTimeOffset.UtcNow;
+        var now = _clock.GetUtcNow();
         tasks.Add(new TaskItem
         {
             Name = draft.Name.Trim(),
@@ -373,9 +394,15 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     public bool UpdateTask(Guid taskId, TaskDraft draft)
     {
         ThrowIfDisposed();
-        if (!CanEditTasks || !ValidateDraft(draft, out var error))
+        if (!CanEditTasks)
         {
-            SetFeedback(error ?? "轮转期间不能修改任务。", true);
+            SetFeedback("轮转期间不能修改任务。", true);
+            return false;
+        }
+
+        if (!ValidateDraft(draft, out var error))
+        {
+            SetFeedback(error ?? "任务输入无效。", true);
             return false;
         }
 
@@ -390,7 +417,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         task.Name = draft.Name.Trim();
         task.Notes = draft.Notes;
         task.SliceDuration = draft.SliceDuration;
-        task.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        task.UpdatedAtUtc = _clock.GetUtcNow();
         CommitTasks(tasks, "任务已更新。");
         return true;
     }
@@ -429,7 +456,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         var tasks = _engine.GetTasks().ToList();
         var task = tasks.First(item => item.Id == SelectedTask.Id);
         task.Enabled = !task.Enabled;
-        task.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        task.UpdatedAtUtc = _clock.GetUtcNow();
         CommitTasks(tasks, task.Enabled ? "任务已启用。" : "任务已停用。");
         return true;
     }
@@ -451,7 +478,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
         task.Completed = false;
         task.Enabled = true;
-        task.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        task.UpdatedAtUtc = _clock.GetUtcNow();
         CommitTasks(tasks, "任务已重新启用。");
         return true;
     }
@@ -468,7 +495,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         foreach (var task in tasks.Where(task => task.Completed))
         {
             task.Completed = false;
-            task.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            task.UpdatedAtUtc = _clock.GetUtcNow();
             changed = true;
         }
 
@@ -624,12 +651,12 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         {
             writer.WriteLine(string.Join(",", new[]
             {
-                CsvEscape(segment.StartedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.CurrentCulture)),
-                CsvEscape(segment.EndedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.CurrentCulture)),
-                CsvEscape(segment.TaskName),
+                CsvFormatter.Escape(segment.StartedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.CurrentCulture)),
+                CsvFormatter.Escape(segment.EndedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.CurrentCulture)),
+                CsvFormatter.Escape(segment.TaskName),
                 segment.Duration.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture),
-                CsvEscape(FormatDuration(segment.Duration)),
-                CsvEscape(GetEndReasonText(segment.EndReason)),
+                CsvFormatter.Escape(FormatDuration(segment.Duration)),
+                CsvFormatter.Escape(GetEndReasonText(segment.EndReason)),
             }));
         }
 
@@ -672,7 +699,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
         {
-            _logger.Error("Saving application data failed.", exception);
+            _logger.LogError("Saving application data failed.", exception);
             if (!silent)
             {
                 SetFeedback($"保存失败：{exception.Message}", true);
@@ -771,9 +798,8 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     private void RefreshTaskRows()
     {
         var selectedId = SelectedTask?.Id;
-        var todayStart = DateTimeOffset.Now.Date;
-        var todayDurations = _engine.GetSegments()
-            .Where(segment => segment.StartedAtUtc.ToLocalTime() >= todayStart)
+        var todayNow = _clock.GetUtcNow().ToLocalTime();
+        var todayDurations = StatisticsCalculator.Filter(_engine.GetSegments(), "Today", todayNow)
             .GroupBy(segment => segment.TaskId)
             .ToDictionary(group => group.Key, group => group.Aggregate(TimeSpan.Zero, (sum, segment) => sum + segment.Duration));
 
@@ -801,7 +827,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     private void RefreshStatistics()
     {
         var segments = GetFilteredSegments().ToArray();
-        var total = segments.Aggregate(TimeSpan.Zero, (sum, segment) => sum + segment.Duration);
+        var total = StatisticsCalculator.Total(segments);
         StatisticsTotalText = FormatDuration(total);
 
         StatisticRows.Clear();
@@ -811,7 +837,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
                      {
                          group.Key.TaskName,
                          Count = group.Count(),
-                         Duration = group.Aggregate(TimeSpan.Zero, (sum, segment) => sum + segment.Duration),
+                         Duration = StatisticsCalculator.Total(group),
                      })
                      .OrderByDescending(item => item.Duration))
         {
@@ -839,20 +865,10 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
     private IEnumerable<WorkSegment> GetFilteredSegments()
     {
-        var segments = _engine.GetSegments();
-        if (SelectedStatisticsScope == "All")
-        {
-            return segments;
-        }
-
-        var now = DateTimeOffset.Now;
-        var start = SelectedStatisticsScope switch
-        {
-            "SevenDays" => now.Date.AddDays(-6),
-            "ThirtyDays" => now.Date.AddDays(-29),
-            _ => now.Date,
-        };
-        return segments.Where(segment => segment.StartedAtUtc.ToLocalTime() >= start);
+        return StatisticsCalculator.Filter(
+            _engine.GetSegments(),
+            SelectedStatisticsScope,
+            _clock.GetUtcNow().ToLocalTime());
     }
 
     private static bool ValidateDraft(TaskDraft draft, out string? error)
@@ -976,11 +992,6 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
             WorkEndReason.ApplicationInterrupted => "应用中断",
             _ => reason.ToString(),
         };
-    }
-
-    private static string CsvEscape(string value)
-    {
-        return "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
     }
 
     private void ThrowIfDisposed()

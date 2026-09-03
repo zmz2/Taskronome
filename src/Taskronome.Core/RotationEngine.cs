@@ -1,6 +1,6 @@
 namespace Taskronome.Core;
 
-public sealed class RotationEngine
+public sealed class RotationEngine : IRotationEngine
 {
     private readonly object _gate = new();
     private readonly IMonotonicClock _clock;
@@ -31,7 +31,6 @@ public sealed class RotationEngine
     public void ReplaceTasks(IEnumerable<TaskItem> tasks)
     {
         ArgumentNullException.ThrowIfNull(tasks);
-
         lock (_gate)
         {
             if (_state is not (RotationState.Idle or RotationState.Completed))
@@ -54,6 +53,10 @@ public sealed class RotationEngine
         IEnumerable<RotationEvent>? events = null)
     {
         ArgumentNullException.ThrowIfNull(tasks);
+        if (checkpoint is not null && checkpoint.SchemaVersion is not 1)
+        {
+            throw new InvalidDataException($"Unsupported rotation checkpoint schema version: {checkpoint.SchemaVersion}.");
+        }
 
         lock (_gate)
         {
@@ -89,12 +92,14 @@ public sealed class RotationEngine
             }
 
             var currentTask = FindTaskLocked(checkpoint.CurrentTaskId);
-            if (currentTask is null)
+            if (currentTask is null || !IsActive(currentTask))
             {
-                SetStateLocked(RotationState.Idle);
+                ClearCurrentLocked();
+                SetStateLocked(FindFirstActiveTaskLocked() is null ? RotationState.Completed : RotationState.Idle);
                 return;
             }
 
+            ValidateCheckpointForTaskLocked(checkpoint, currentTask);
             _currentTaskId = currentTask.Id;
             _remaining = ClampRemaining(checkpoint.Remaining, currentTask.SliceDuration);
 
@@ -148,8 +153,7 @@ public sealed class RotationEngine
                     SetStateLocked(RotationState.PausedSystem);
                     break;
                 default:
-                    SetStateLocked(RotationState.Idle);
-                    break;
+                    throw new InvalidDataException($"Unsupported rotation checkpoint state: {checkpoint.State}.");
             }
         }
     }
@@ -194,6 +198,11 @@ public sealed class RotationEngine
             }
 
             var task = FindTaskLocked(_currentTaskId);
+            if (task is null || !IsActive(task))
+            {
+                return false;
+            }
+
             StartRunningLocked(now);
             AddEventLocked(
                 RotationEventType.TaskConfirmed,
@@ -234,7 +243,7 @@ public sealed class RotationEngine
         lock (_gate)
         {
             var task = FindTaskLocked(_currentTaskId);
-            if (_state != RotationState.PausedManual || task is null)
+            if (_state != RotationState.PausedManual || task is null || !IsActive(task))
             {
                 return false;
             }
@@ -249,7 +258,7 @@ public sealed class RotationEngine
     {
         lock (_gate)
         {
-            if (_state != RotationState.PausedAbsent || FindTaskLocked(_currentTaskId) is null)
+            if (_state != RotationState.PausedAbsent || FindTaskLocked(_currentTaskId) is not { } task || !IsActive(task))
             {
                 return false;
             }
@@ -303,7 +312,7 @@ public sealed class RotationEngine
         lock (_gate)
         {
             var task = FindTaskLocked(_currentTaskId);
-            if (_state != RotationState.PausedSystem || task is null)
+            if (_state != RotationState.PausedSystem || task is null || !IsActive(task))
             {
                 return false;
             }
@@ -315,6 +324,9 @@ public sealed class RotationEngine
 
             switch (previousState)
             {
+                case RotationState.Running:
+                    StartRunningLocked(now);
+                    break;
                 case RotationState.AwaitingConfirmation:
                 case RotationState.PausedAbsent:
                     EnterAwaitingConfirmationLocked(now);
@@ -323,7 +335,10 @@ public sealed class RotationEngine
                     SetStateLocked(RotationState.PausedManual);
                     break;
                 default:
-                    StartRunningLocked(now);
+                    // Unknown recovery history is handled conservatively. A user
+                    // action may recover the task, but it still must pass the
+                    // normal in-app confirmation boundary before work starts.
+                    EnterAwaitingConfirmationLocked(now);
                     break;
             }
 
@@ -556,7 +571,20 @@ public sealed class RotationEngine
         else if (_state == RotationState.AwaitingConfirmation && _confirmationStartedTimestamp.HasValue)
         {
             var elapsed = _clock.GetElapsedTime(_confirmationStartedTimestamp.Value, now);
-            if (elapsed >= _options.ConfirmationTimeout)
+            if (elapsed < TimeSpan.Zero)
+            {
+                var task = FindTaskLocked(_currentTaskId);
+                _confirmationStartedTimestamp = null;
+                _stateBeforeSystemPause = RotationState.AwaitingConfirmation;
+                _systemPauseReason = SystemPauseReason.HeartbeatGap;
+                SetStateLocked(RotationState.PausedSystem);
+                AddEventLocked(
+                    RotationEventType.SystemPaused,
+                    "检测到单调时钟异常；确认窗口已安全暂停。",
+                    task?.Id,
+                    task?.Name ?? string.Empty);
+            }
+            else if (elapsed >= _options.ConfirmationTimeout)
             {
                 var task = FindTaskLocked(_currentTaskId);
                 _confirmationStartedTimestamp = null;
@@ -835,5 +863,21 @@ public sealed class RotationEngine
         }
 
         return remaining > sliceDuration ? sliceDuration : remaining;
+    }
+
+    private static void ValidateCheckpointForTaskLocked(RotationCheckpoint checkpoint, TaskItem task)
+    {
+        if (!Enum.IsDefined(checkpoint.State) ||
+            (checkpoint.StateBeforeSystemPause is not null &&
+             !Enum.IsDefined(checkpoint.StateBeforeSystemPause.Value)) ||
+            (checkpoint.SystemPauseReason is not null &&
+             !Enum.IsDefined(checkpoint.SystemPauseReason.Value)) ||
+            checkpoint.Remaining < TimeSpan.Zero ||
+            checkpoint.Remaining > task.SliceDuration ||
+            checkpoint.CurrentRunAccumulated < TimeSpan.Zero ||
+            checkpoint.CurrentRunAccumulated > task.SliceDuration)
+        {
+            throw new InvalidDataException("The rotation checkpoint is invalid for its current task.");
+        }
     }
 }

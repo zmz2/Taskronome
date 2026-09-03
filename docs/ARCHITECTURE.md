@@ -10,11 +10,12 @@ Taskronome prioritizes correct duration accounting over animation precision. The
 
 The Core assembly targets plain `net10.0` and has no WPF or Windows dependency. It contains:
 
-- `RotationEngine`: lock-protected deterministic state machine;
+- `RotationEngine`: lock-protected deterministic state machine implementing `IRotationEngine`;
 - `IMonotonicClock`: injectable monotonic duration source;
 - task, checkpoint, work-segment and event models;
 - task validation;
-- `JsonFileDataStore`: atomic local persistence and corruption isolation.
+- `JsonFileDataStore`: atomic local persistence, backup recovery, concurrent-save serialization, and corruption isolation;
+- `StatisticsCalculator` and `CsvFormatter`: local-date aggregation and Excel-compatible UTF-8 output without UI dependencies.
 
 Core is directly unit-tested with a fake monotonic clock. This allows exact checks at the 10-second confirmation deadline and around sleep/lock gaps without waiting in real time.
 
@@ -67,9 +68,9 @@ AwaitingConfirmation --10 s timeout--> PausedAbsent
 
 ## 5. Persistence
 
-`data.json` is written to a uniquely named temporary file with write-through and disk flush, then atomically moved over the live file. Before replacement, the previous live file is copied to `data.json.bak`.
+`data.json` is written to a uniquely named temporary file with write-through and disk flush, then atomically replaced over the live file. Before replacement, the previous live file is copied to `data.json.bak`. A per-directory lock serializes concurrent saves. JSON/schema/validation failures are distinguished from I/O and permission failures; invalid main or backup files are preserved as `data.corrupt-*.json`, while a valid backup is restored to the main path.
 
-Deserialization validates schema version, duplicate task IDs and task constraints. Invalid input is moved to `data.corrupt-<timestamp>.json`; the app starts with an empty safe data set rather than crashing or silently overwriting the evidence.
+Deserialization validates schema version, duplicate task IDs, task constraints, enum values, durations, timestamps, and checkpoint bounds. Invalid input is moved to `data.corrupt-<timestamp>.json`; the app starts with an empty safe data set only when both JSON candidates are invalid. Permission or transient I/O errors propagate to the UI instead of being misclassified as corruption.
 
 ## 6. Notifications and presence
 

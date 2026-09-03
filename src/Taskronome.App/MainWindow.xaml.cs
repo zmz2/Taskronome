@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Media;
 using System.Windows;
 using System.Windows.Controls;
@@ -11,35 +12,49 @@ using Taskronome.App.Services;
 using Taskronome.App.ViewModels;
 using Taskronome.Core;
 using Forms = System.Windows.Forms;
+using WpfApplication = System.Windows.Application;
+using WpfMessageBox = System.Windows.MessageBox;
+using WpfSaveFileDialog = Microsoft.Win32.SaveFileDialog;
 
 namespace Taskronome.App;
 
-public partial class MainWindow : Window
+public partial class MainWindow : Window, IDisposable
 {
     private readonly MainWindowViewModel _viewModel;
-    private readonly NotificationService _notificationService;
+    private readonly INotificationService _notificationService;
     private readonly DispatcherTimer _uiTimer;
+    private readonly int _smokeHoldMilliseconds;
     private readonly bool _smokeTestMode;
+    private readonly bool _testMode;
     private WindowsSessionMonitor? _sessionMonitor;
     private Forms.NotifyIcon? _trayIcon;
     private Forms.ContextMenuStrip? _trayMenu;
     private Forms.ToolStripMenuItem? _trayPauseItem;
     private Forms.ToolStripMenuItem? _trayTopmostItem;
     private System.Drawing.Icon? _ownedTrayIcon;
+    private DispatcherTimer? _smokeCompletionTimer;
     private bool _forceClose;
     private bool _closeHintShown;
     private bool _disposed;
 
     public MainWindow(
         MainWindowViewModel viewModel,
-        NotificationService notificationService,
-        bool smokeTestMode = false)
+        INotificationService notificationService,
+        bool smokeTestMode = false,
+        bool testMode = false,
+        int smokeHoldMilliseconds = 0)
     {
         _viewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
         _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
         _smokeTestMode = smokeTestMode;
+        _testMode = testMode;
+        _smokeHoldMilliseconds = smokeHoldMilliseconds;
 
         InitializeComponent();
+        if (_testMode)
+        {
+            Title = "Taskronome · 测试模式";
+        }
         DataContext = _viewModel;
         Topmost = _viewModel.AlwaysOnTop;
         WindowPlacementService.Apply(this, _viewModel.WindowPlacement);
@@ -95,7 +110,7 @@ public partial class MainWindow : Window
         }
         catch (Exception exception)
         {
-            ((App)Application.Current).HandleRecoverableUiException("刷新计时状态失败。", exception);
+            ((App)WpfApplication.Current).HandleRecoverableUiException("刷新计时状态失败。", exception);
         }
     }
 
@@ -206,7 +221,7 @@ public partial class MainWindow : Window
         }
 
         e.Cancel = true;
-        Dispatcher.InvokeAsync(() => ((App)Application.Current).RequestExit());
+        Dispatcher.InvokeAsync(() => ((App)WpfApplication.Current).RequestExit());
     }
 
     private void Window_Closed(object? sender, EventArgs e)
@@ -281,7 +296,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var result = MessageBox.Show(
+        var result = WpfMessageBox.Show(
             this,
             $"确定删除任务“{selected.Name}”吗？已产生的历史统计仍会保留。",
             "删除任务",
@@ -304,7 +319,7 @@ public partial class MainWindow : Window
 
     private void ResetCompletionButton_Click(object sender, RoutedEventArgs e)
     {
-        var result = MessageBox.Show(
+        var result = WpfMessageBox.Show(
             this,
             "重置所有任务的完成状态？历史统计不会清除。",
             "重置完成状态",
@@ -335,7 +350,7 @@ public partial class MainWindow : Window
 
     private void StopButton_Click(object sender, RoutedEventArgs e)
     {
-        var result = MessageBox.Show(
+        var result = WpfMessageBox.Show(
             this,
             "停止当前轮转？已经确认工作的时长会保留。",
             "停止轮转",
@@ -351,7 +366,7 @@ public partial class MainWindow : Window
 
     private void ExportCsvButton_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new SaveFileDialog
+        var dialog = new WpfSaveFileDialog
         {
             Title = "导出 Taskronome 统计",
             Filter = "CSV 文件 (*.csv)|*.csv|所有文件 (*.*)|*.*",
@@ -367,7 +382,7 @@ public partial class MainWindow : Window
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                MessageBox.Show(this, $"导出失败：{exception.Message}", "导出失败", MessageBoxButton.OK, MessageBoxImage.Error);
+                WpfMessageBox.Show(this, $"导出失败：{exception.Message}", "导出失败", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
     }
@@ -378,7 +393,7 @@ public partial class MainWindow : Window
         if (!sent)
         {
             ShowTrayFallback("Taskronome 测试通知", "Windows 通知不可用，已使用托盘气泡作为回退。应用内确认仍可正常工作。");
-            MessageBox.Show(
+            WpfMessageBox.Show(
                 this,
                 $"Windows App SDK 通知发送失败。\n\n{_notificationService.LastError}\n\n已尝试托盘回退，轮转不会因此崩溃。",
                 "通知测试",
@@ -400,11 +415,11 @@ public partial class MainWindow : Window
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or Win32Exception)
         {
-            MessageBox.Show(this, $"无法打开数据文件夹：{exception.Message}", "打开失败", MessageBoxButton.OK, MessageBoxImage.Error);
+            WpfMessageBox.Show(this, $"无法打开数据文件夹：{exception.Message}", "打开失败", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
         var modifiers = Keyboard.Modifiers;
         if (modifiers.HasFlag(ModifierKeys.Control) &&
@@ -442,7 +457,9 @@ public partial class MainWindow : Window
 
     private static bool IsTextEntryFocused()
     {
-        return Keyboard.FocusedElement is TextBoxBase or PasswordBox or ComboBox;
+        return Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase
+            or PasswordBox
+            or System.Windows.Controls.ComboBox;
     }
 
     private void CreateTrayIcon()
@@ -454,7 +471,7 @@ public partial class MainWindow : Window
         _trayTopmostItem = new Forms.ToolStripMenuItem("窗口始终置顶", null, (_, _) => Dispatcher.InvokeAsync(() => _viewModel.AlwaysOnTop = !_viewModel.AlwaysOnTop));
         _trayMenu.Items.Add(_trayTopmostItem);
         _trayMenu.Items.Add(new Forms.ToolStripSeparator());
-        _trayMenu.Items.Add("退出", null, (_, _) => Dispatcher.InvokeAsync(() => ((App)Application.Current).RequestExit()));
+        _trayMenu.Items.Add("退出", null, (_, _) => Dispatcher.InvokeAsync(() => ((App)WpfApplication.Current).RequestExit()));
 
         var processPath = Environment.ProcessPath;
         if (!string.IsNullOrWhiteSpace(processPath))
@@ -529,13 +546,38 @@ public partial class MainWindow : Window
                 throw new InvalidOperationException("The smoke-test did not reach the expected safe state.");
             }
 
-            Dispatcher.InvokeAsync(() => ((App)Application.Current).CompleteSmokeTest(0));
+            if (_smokeHoldMilliseconds <= 0)
+            {
+                Dispatcher.InvokeAsync(() => ((App)WpfApplication.Current).CompleteSmokeTest(0));
+            }
+            else
+            {
+                _smokeCompletionTimer = new DispatcherTimer
+                {
+                    Interval = TimeSpan.FromMilliseconds(_smokeHoldMilliseconds),
+                };
+                _smokeCompletionTimer.Tick += SmokeCompletionTimer_Tick;
+                _smokeCompletionTimer.Start();
+            }
         }
         catch (Exception exception)
         {
-            ((App)Application.Current).HandleRecoverableUiException("UI 启动烟雾测试失败。", exception);
-            Dispatcher.InvokeAsync(() => ((App)Application.Current).CompleteSmokeTest(1));
+            ((App)WpfApplication.Current).HandleRecoverableUiException("UI 启动烟雾测试失败。", exception);
+            Dispatcher.InvokeAsync(() => ((App)WpfApplication.Current).CompleteSmokeTest(1));
         }
+    }
+
+    private void SmokeCompletionTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_smokeCompletionTimer is null)
+        {
+            return;
+        }
+
+        _smokeCompletionTimer.Stop();
+        _smokeCompletionTimer.Tick -= SmokeCompletionTimer_Tick;
+        _smokeCompletionTimer = null;
+        ((App)WpfApplication.Current).CompleteSmokeTest(0);
     }
 
     private void DisposeWindowResources()
@@ -548,6 +590,12 @@ public partial class MainWindow : Window
         _disposed = true;
         _uiTimer.Stop();
         _uiTimer.Tick -= UiTimer_Tick;
+        if (_smokeCompletionTimer is not null)
+        {
+            _smokeCompletionTimer.Stop();
+            _smokeCompletionTimer.Tick -= SmokeCompletionTimer_Tick;
+            _smokeCompletionTimer = null;
+        }
         _sessionMonitor?.Dispose();
         _sessionMonitor = null;
 
@@ -568,5 +616,11 @@ public partial class MainWindow : Window
         _ownedTrayIcon = null;
         _trayMenu?.Dispose();
         _trayMenu = null;
+    }
+
+    public void Dispose()
+    {
+        DisposeWindowResources();
+        GC.SuppressFinalize(this);
     }
 }

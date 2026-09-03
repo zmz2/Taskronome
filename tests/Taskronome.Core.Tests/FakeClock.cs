@@ -22,5 +22,7 @@ internal sealed class FakeClock : IMonotonicClock
 
     public void AdvanceMonotonicOnly(TimeSpan duration) => _timestampTicks += duration.Ticks;
 
+    public void RewindMonotonicOnly(TimeSpan duration) => _timestampTicks -= duration.Ticks;
+
     public void SetUtcNow(DateTimeOffset utcNow) => _utcNow = utcNow;
 }

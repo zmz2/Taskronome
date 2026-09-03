@@ -19,8 +19,8 @@ public sealed class RotationBoundaryTests
 
         Assert.Equal(second.Id, engine.GetStatus().CurrentTaskId);
         Assert.False(engine.GetTasks().Single(task => task.Id == second.Id).Completed);
-        Assert.True(engine.GetEvents().Any(item => item.Type == RotationEventType.SliceExpired));
-        Assert.False(engine.GetEvents().Any(item => item.Type == RotationEventType.TaskCompletedEarly));
+        Assert.Contains(engine.GetEvents(), item => item.Type == RotationEventType.SliceExpired);
+        Assert.DoesNotContain(engine.GetEvents(), item => item.Type == RotationEventType.TaskCompletedEarly);
     }
 
     [Fact]
@@ -38,7 +38,7 @@ public sealed class RotationBoundaryTests
 
         Assert.Equal(second.Id, engine.GetStatus().CurrentTaskId);
         Assert.Equal(RotationState.AwaitingConfirmation, engine.GetStatus().State);
-        Assert.False(engine.GetEvents().Any(item => item.Type == RotationEventType.SliceSkipped));
+        Assert.DoesNotContain(engine.GetEvents(), item => item.Type == RotationEventType.SliceSkipped);
     }
 
     [Fact]
@@ -73,7 +73,7 @@ public sealed class RotationBoundaryTests
         Assert.True(engine.SkipCurrentSlice());
 
         Assert.Empty(engine.GetSegments());
-        var skipped = Assert.Single(engine.GetEvents().Where(item => item.Type == RotationEventType.SliceSkipped));
+        var skipped = Assert.Single(engine.GetEvents(), item => item.Type == RotationEventType.SliceSkipped);
         Assert.Equal(first.Id, skipped.TaskId);
         Assert.Equal(second.Id, engine.GetStatus().CurrentTaskId);
     }

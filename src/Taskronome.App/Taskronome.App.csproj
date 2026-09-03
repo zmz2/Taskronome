@@ -4,6 +4,8 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <AssemblyName>Taskronome</AssemblyName>
     <RootNamespace>Taskronome.App</RootNamespace>
@@ -13,8 +15,10 @@
     <Product>Taskronome</Product>
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <PublishSingleFile>false</PublishSingleFile>
+    <NoWarn>$(NoWarn);CA1014</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Taskronome.Core\Taskronome.Core.csproj" />

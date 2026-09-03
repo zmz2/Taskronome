@@ -1,40 +1,27 @@
-# Implementation handoff
+# Final handoff
 
-## Current implementation
+Taskronome is delivered as an existing Windows WPF implementation completed on the final handoff branch. The state machine and UI were preserved; the final work adds the missing Windows build/release gates, deterministic edge-case coverage, real short-duration scenario, persistence hardening, and delivery documentation.
 
-The repository contains a complete first-pass implementation of Taskronome v1.0 on branch `chatgpt/implementation-v1`:
+## Local gate
 
-- cross-platform Core state machine using monotonic time;
-- strict confirmation and interruption accounting;
-- local atomic persistence, backup and corrupt-file isolation;
-- WPF task planning, run, statistics and settings UI;
-- Windows App SDK notifications with activation-only semantics;
-- system tray, topmost, single instance and named-pipe activation;
-- WTS/power interruption hooks;
-- deterministic tests, real-time scenario and WPF smoke mode;
-- Windows CI, portable packaging and per-user Inno Setup installer;
-- user/developer/privacy/security documentation.
-
-## Required final local pass
-
-A Windows machine must run:
+From a Windows PowerShell 7 shell at the repository root:
 
 ```powershell
-git checkout chatgpt/implementation-v1
-pwsh ./scripts/verify.ps1
-pwsh ./scripts/package.ps1 -Version 1.0.0
+pwsh -NoProfile -File .\scripts\bootstrap-and-verify.ps1 -Package
 ```
 
-Then execute every item in `docs/MANUAL-TEST-CHECKLIST.md`. Record the exact results rather than converting unperformed items into claims.
+This invokes the Python source audit, locked NuGet restore, format check, Release build, deterministic tests and coverage, the real 2-second/3-second scenario, self-contained publish, WPF/single-instance smoke, portable ZIP, and Inno Setup installer. The final facts belong in [TEST_REPORT.md](TEST_REPORT.md).
 
 ## Review priorities
 
-1. Resolve any remaining compiler/API mismatch reported by the current Windows SDK/.NET SDK, preserving the state-machine invariants.
-2. Verify unpackaged Windows App SDK notification registration and activation from the installed and portable builds.
-3. Exercise lock/suspend/resume on real hardware and inspect persisted work segments.
-4. Validate Inno Setup install/uninstall under a standard account.
-5. Review the WPF layout at common DPI settings and improve accessibility without weakening the confirmation flow.
-6. Generate and commit NuGet lock files after the dependency graph is stable, then switch CI restore to locked mode.
-7. Update this file and the Pull Request with real test counts, coverage, artifact names and SHA-256 values.
+1. Confirm the final `docs/TEST_REPORT.md` values against `artifacts/verification-summary.json`, TRX/Cobertura output, scenario evidence, and package checksums.
+2. Execute [MANUAL_TEST_CHECKLIST.md](MANUAL_TEST_CHECKLIST.md) on the target Windows session, especially notification permission/activation, tray, lock/sleep/session changes, DPI, multi-monitor behavior, and installer/uninstaller UX.
+3. Review the pull request's Windows CI run and downloaded artifacts before release.
 
-Do not replace deterministic tests with sleeps, allow notification clicks to confirm tasks, or count any interval outside `Running`.
+## Safety invariants
+
+Only `Running` adds actual work time. Each turn requires an in-app confirmation. Notification activation only restores/focuses the app. Monotonic time is the duration source; wall time is metadata. Confirmation timeout, manual/system pause, lock, sleep, session disconnect, restart, and an untrusted heartbeat gap never add time.
+
+## Package contract
+
+`artifacts/dist/` contains a self-contained `Taskronome-<version>-win-x64-portable.zip`, a per-user `Taskronome-<version>-win-x64-setup.exe`, `SHA256SUMS.txt`, and `package-manifest.json`. The installer uses `PrivilegesRequired=lowest` and preserves `%LOCALAPPDATA%\Taskronome` on uninstall.

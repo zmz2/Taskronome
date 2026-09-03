@@ -4,7 +4,9 @@ on:
   push:
     branches:
       - main
+      - "assistant/**"
       - "chatgpt/**"
+      - "codex/**"
   pull_request:
     branches:
       - main
@@ -20,7 +22,7 @@ concurrency:
 jobs:
   verify-and-package:
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository
@@ -31,30 +33,24 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Verify build, tests, coverage, scenario, publish, and UI startup
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
-          try {
-            & ./scripts/verify.ps1 *>&1 | Tee-Object -FilePath artifacts/ci-verify.log
-          }
-          catch {
-            $_ | Out-String | Tee-Object -FilePath artifacts/ci-verify.log -Append
-            throw
-          }
+      - name: Install Python for source audit
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
 
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup -y --no-progress
 
-      - name: Build portable package and per-user installer
+      - name: Run the complete Windows gate
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
           try {
-            & ./scripts/package.ps1 -Version 1.0.0 *>&1 | Tee-Object -FilePath artifacts/ci-package.log
+            & ./scripts/bootstrap-and-verify.ps1 -Package *>&1 | Tee-Object -FilePath artifacts/ci-verify-and-package.log
           }
           catch {
-            $_ | Out-String | Tee-Object -FilePath artifacts/ci-package.log -Append
+            $_ | Out-String | Tee-Object -FilePath artifacts/ci-verify-and-package.log -Append
             throw
           }
 
@@ -75,16 +71,18 @@ jobs:
             '```' | Add-Content $env:GITHUB_STEP_SUMMARY
           }
 
-      - name: Upload test and coverage evidence
+      - name: Upload test, coverage, and verification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: taskronome-test-evidence
           path: |
+            artifacts/source-audit.json
             artifacts/test-results/**
+            artifacts/scenario/**
+            artifacts/ui-smoke/**
             artifacts/verification-summary.json
-            artifacts/ci-verify.log
-            artifacts/ci-package.log
+            artifacts/ci-verify-and-package.log
           if-no-files-found: warn
           retention-days: 30
 

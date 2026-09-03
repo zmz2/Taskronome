@@ -171,6 +171,49 @@ public interface IMonotonicClock
     DateTimeOffset GetUtcNow();
 }
 
+public interface IRotationEngine
+{
+    void ReplaceTasks(IEnumerable<TaskItem> tasks);
+
+    void Load(
+        IEnumerable<TaskItem> tasks,
+        IEnumerable<WorkSegment>? segments,
+        RotationCheckpoint? checkpoint,
+        IEnumerable<RotationEvent>? events = null);
+
+    bool StartRotation();
+
+    bool ConfirmCurrentTask();
+
+    bool PauseManual();
+
+    bool ResumeManual();
+
+    bool ResumeAfterAbsence();
+
+    bool PauseForSystem(SystemPauseReason reason);
+
+    bool ResumeAfterSystemPause();
+
+    bool SkipCurrentSlice();
+
+    bool CompleteCurrentTask();
+
+    bool StopRotation();
+
+    void Pulse();
+
+    RotationStatus GetStatus();
+
+    IReadOnlyList<TaskItem> GetTasks();
+
+    IReadOnlyList<WorkSegment> GetSegments();
+
+    IReadOnlyList<RotationEvent> GetEvents();
+
+    RotationCheckpoint CreateCheckpoint();
+}
+
 public sealed class SystemMonotonicClock : IMonotonicClock
 {
     private readonly TimeProvider _timeProvider;

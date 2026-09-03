@@ -11,5 +11,6 @@
     <Authors>zmz2</Authors>
     <RepositoryUrl>https://github.com/zmz2/Taskronome</RepositoryUrl>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 </Project>

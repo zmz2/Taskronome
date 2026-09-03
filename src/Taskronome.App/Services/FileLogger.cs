@@ -1,9 +1,22 @@
 using System.Globalization;
 
+using System.IO;
+
 namespace Taskronome.App.Services;
 
-public sealed class FileLogger
+public interface IAppLogger
 {
+    void Info(string message);
+
+    void Warning(string message);
+
+    void LogError(string message, Exception exception);
+}
+
+public sealed class FileLogger : IAppLogger
+{
+    private const long MaximumLogBytes = 1024 * 1024;
+    private const int MaximumRolledFiles = 3;
     private readonly object _gate = new();
     private readonly string _directoryPath;
 
@@ -18,7 +31,7 @@ public sealed class FileLogger
 
     public void Warning(string message) => Write("WARN", message, null);
 
-    public void Error(string message, Exception exception) => Write("ERROR", message, exception);
+    public void LogError(string message, Exception exception) => Write("ERROR", message, exception);
 
     private void Write(string level, string message, Exception? exception)
     {
@@ -29,15 +42,16 @@ public sealed class FileLogger
                 Directory.CreateDirectory(_directoryPath);
                 var path = Path.Combine(
                     _directoryPath,
-                    $"taskronome-{DateTimeOffset.Now:yyyyMMdd}.log");
+                    $"taskronome-{DateTimeOffset.UtcNow:yyyyMMdd}.log");
                 var line = string.Create(
                     CultureInfo.InvariantCulture,
-                    $"{DateTimeOffset.Now:O} [{level}] {message}");
+                    $"{DateTimeOffset.UtcNow:O} [{level}] {Sanitize(message)}");
                 if (exception is not null)
                 {
-                    line = $"{line}{Environment.NewLine}{exception}";
+                    line = $"{line} exception={Sanitize(exception.ToString())}";
                 }
 
+                RollIfNeeded(path);
                 File.AppendAllText(path, $"{line}{Environment.NewLine}", new System.Text.UTF8Encoding(false));
             }
         }
@@ -45,5 +59,32 @@ public sealed class FileLogger
         {
             // Logging must never terminate the desktop application.
         }
+    }
+
+    private static string Sanitize(string value)
+    {
+        return value
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
+    }
+
+    private static void RollIfNeeded(string path)
+    {
+        if (!File.Exists(path) || new FileInfo(path).Length < MaximumLogBytes)
+        {
+            return;
+        }
+
+        for (var index = MaximumRolledFiles - 1; index >= 1; index--)
+        {
+            var source = $"{path}.{index}";
+            var destination = $"{path}.{index + 1}";
+            if (File.Exists(source))
+            {
+                File.Move(source, destination, overwrite: true);
+            }
+        }
+
+        File.Move(path, $"{path}.1", overwrite: true);
     }
 }

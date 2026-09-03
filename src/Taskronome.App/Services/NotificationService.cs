@@ -3,15 +3,32 @@ using Microsoft.Windows.AppNotifications.Builder;
 
 namespace Taskronome.App.Services;
 
-public sealed class NotificationService : IDisposable
+public interface INotificationService : IDisposable
+{
+    event EventHandler? ActivationRequested;
+
+    bool IsAvailable { get; }
+
+    string LastError { get; }
+
+    bool Initialize();
+
+    bool ShowTaskTurn(string taskName);
+
+    bool ShowTestNotification();
+}
+
+public sealed class NotificationService : INotificationService
 {
     private readonly FileLogger _logger;
+    private readonly bool _dryRun;
     private bool _registered;
     private bool _disposed;
 
-    public NotificationService(FileLogger logger)
+    public NotificationService(FileLogger logger, bool dryRun = false)
     {
-        _logger = logger;
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _dryRun = dryRun;
     }
 
     public event EventHandler? ActivationRequested;
@@ -28,6 +45,14 @@ public sealed class NotificationService : IDisposable
             return true;
         }
 
+        if (_dryRun)
+        {
+            _registered = true;
+            LastError = string.Empty;
+            _logger.Info("Windows App SDK notification service dry-run initialized.");
+            return true;
+        }
+
         try
         {
             AppNotificationManager.Default.NotificationInvoked += OnNotificationInvoked;
@@ -40,14 +65,14 @@ public sealed class NotificationService : IDisposable
         catch (Exception exception)
         {
             LastError = exception.Message;
-            _logger.Error("Windows App SDK notification registration failed; in-app and tray fallbacks remain active.", exception);
+            _logger.LogError("Windows App SDK notification registration failed; in-app and tray fallbacks remain active.", exception);
             try
             {
                 AppNotificationManager.Default.NotificationInvoked -= OnNotificationInvoked;
             }
             catch (Exception unsubscribeException)
             {
-                _logger.Error("Notification event cleanup failed after registration error.", unsubscribeException);
+                _logger.LogError("Notification event cleanup failed after registration error.", unsubscribeException);
             }
 
             return false;
@@ -87,6 +112,14 @@ public sealed class NotificationService : IDisposable
                 .AddText(title)
                 .AddText(body)
                 .BuildNotification();
+
+            if (_dryRun)
+            {
+                LastError = string.Empty;
+                _logger.Info($"Notification dry-run payload built: {title}");
+                return true;
+            }
+
             AppNotificationManager.Default.Show(notification);
             LastError = string.Empty;
             return true;
@@ -94,7 +127,7 @@ public sealed class NotificationService : IDisposable
         catch (Exception exception)
         {
             LastError = exception.Message;
-            _logger.Error("Sending a Windows app notification failed.", exception);
+            _logger.LogError("Sending a Windows app notification failed.", exception);
             return false;
         }
     }
@@ -115,7 +148,7 @@ public sealed class NotificationService : IDisposable
         }
 
         _disposed = true;
-        if (_registered)
+        if (_registered && !_dryRun)
         {
             try
             {
@@ -125,7 +158,7 @@ public sealed class NotificationService : IDisposable
             }
             catch (Exception exception)
             {
-                _logger.Error("Windows App SDK notification cleanup failed.", exception);
+                _logger.LogError("Windows App SDK notification cleanup failed.", exception);
             }
         }
 

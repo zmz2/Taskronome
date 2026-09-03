@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Static handoff audit for the Taskronome source tree.
+
+This intentionally checks repository structure and production-source hygiene. It
+does not replace compilation or runtime tests; those are run by verify.ps1.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+
+MARKER_RE = re.compile(r"\b(?:TODO|FIXME|NotImplementedException|PLACEHOLDER)\b")
+ABSOLUTE_DEV_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/]Users[\\/][^\\/\s]+|D:[\\/]VibeCodingTools)",
+    re.IGNORECASE,
+)
+SOURCE_EXTENSIONS = {".cs", ".xaml", ".ps1", ".yml", ".yaml", ".iss"}
+IGNORED_DIRS = {".git", "bin", "obj", "artifacts", "TestResults", "coverage"}
+
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8-sig", errors="replace")
+
+
+def source_files(root: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in SOURCE_EXTENSIONS
+        and not any(part in IGNORED_DIRS for part in path.relative_to(root).parts)
+    )
+
+
+def fail(errors: list[str], message: str) -> None:
+    errors.append(message)
+
+
+def audit(root: Path) -> tuple[dict[str, object], list[str]]:
+    errors: list[str] = []
+    required_files = [
+        "AGENTS.md",
+        "README.md",
+        "LICENSE",
+        "PRIVACY.md",
+        "SECURITY.md",
+        "CONTRIBUTING.md",
+        "THIRD-PARTY-NOTICES.md",
+        "Taskronome.sln",
+        "Directory.Packages.props",
+        "coverlet.runsettings",
+        "scripts/verify.ps1",
+        "scripts/package.ps1",
+        "scripts/bootstrap-and-verify.ps1",
+        "scripts/ui-smoke.ps1",
+        "src/Taskronome.Core/Taskronome.Core.csproj",
+        "src/Taskronome.App/Taskronome.App.csproj",
+        "tests/Taskronome.Core.Tests/Taskronome.Core.Tests.csproj",
+        "tests/Taskronome.ScenarioRunner/Taskronome.ScenarioRunner.csproj",
+        "docs/ASSISTANT_HANDOFF.md",
+        "docs/ARCHITECTURE.md",
+        "docs/TEST_PLAN.md",
+        "docs/TEST_REPORT.md",
+        "docs/MANUAL_TEST_CHECKLIST.md",
+        "docs/PRIVACY.md",
+    ]
+    missing = [item for item in required_files if not (root / item).is_file()]
+    for item in missing:
+        fail(errors, f"required file is missing: {item}")
+
+    project_paths = sorted(root.glob("**/*.csproj"))
+    lock_files: list[str] = []
+    project_refs: dict[str, list[str]] = {}
+    for project_path in project_paths:
+        try:
+            project = ET.fromstring(read_text(project_path))
+        except ET.ParseError as exc:
+            fail(errors, f"invalid project XML in {project_path.relative_to(root)}: {exc}")
+            continue
+
+        relative_project = project_path.relative_to(root).as_posix()
+        lock_path = project_path.with_name("packages.lock.json")
+        if not lock_path.is_file():
+            fail(errors, f"packages.lock.json is missing next to {relative_project}")
+        else:
+            lock_files.append(lock_path.relative_to(root).as_posix())
+
+        references = [
+            node.attrib.get("Include", "")
+            for node in project.findall(".//{*}ProjectReference")
+        ]
+        project_refs[relative_project] = references
+        if relative_project.endswith("Taskronome.Core.csproj") and any(
+            "Taskronome.App" in reference for reference in references
+        ):
+            fail(errors, "Taskronome.Core must not reference Taskronome.App")
+
+    app_references = project_refs.get("src/Taskronome.App/Taskronome.App.csproj", [])
+    if not any("Taskronome.Core" in reference for reference in app_references):
+        fail(errors, "Taskronome.App must reference Taskronome.Core")
+
+    test_projects = [
+        path
+        for path in project_paths
+        if path.parts[-2] == "tests" or "tests" in path.relative_to(root).parts
+    ]
+    for test_project in test_projects:
+        if not any(
+            "Taskronome.Core" in reference
+            for reference in project_refs.get(test_project.relative_to(root).as_posix(), [])
+        ):
+            fail(errors, f"test project does not reference Taskronome.Core: {test_project.relative_to(root)}")
+
+    test_source = "\n".join(
+        read_text(path)
+        for path in (root / "tests").rglob("*.cs")
+        if path.is_file()
+    )
+    fact_count = len(re.findall(r"\[(?:Fact|Theory)(?:\([^\]]*\))?\]", test_source))
+    if fact_count < 50:
+        fail(errors, f"deterministic test attribute count is {fact_count}; at least 50 is required")
+
+    source_issues: list[dict[str, object]] = []
+    absolute_path_issues: list[dict[str, object]] = []
+    for path in source_files(root):
+        relative = path.relative_to(root).as_posix()
+        if path.name not in {"assistant-source-audit.py", "verify.ps1"}:
+            for line_number, line in enumerate(read_text(path).splitlines(), start=1):
+                if MARKER_RE.search(line):
+                    source_issues.append({"file": relative, "line": line_number})
+        for line_number, line in enumerate(read_text(path).splitlines(), start=1):
+            if ABSOLUTE_DEV_PATH_RE.search(line):
+                absolute_path_issues.append({"file": relative, "line": line_number})
+
+    for issue in source_issues:
+        fail(errors, f"unfinished marker in {issue['file']}:{issue['line']}")
+    for issue in absolute_path_issues:
+        fail(errors, f"developer absolute path in {issue['file']}:{issue['line']}")
+
+    package_props = root / "Directory.Packages.props"
+    package_text = read_text(package_props) if package_props.is_file() else ""
+    if "ManagePackageVersionsCentrally" not in package_text:
+        fail(errors, "central package management is not enabled")
+
+    solution_text = read_text(root / "Taskronome.sln") if (root / "Taskronome.sln").is_file() else ""
+    if solution_text.count('Project("{') != 4:
+        fail(errors, "Taskronome.sln must contain the four production/test projects")
+
+    result: dict[str, object] = {
+        "status": "passed" if not errors else "failed",
+        "repository": str(root),
+        "requiredFileCount": len(required_files),
+        "projectCount": len(project_paths),
+        "lockFiles": lock_files,
+        "testAttributeCount": fact_count,
+        "sourceMarkerIssues": source_issues,
+        "absolutePathIssues": absolute_path_issues,
+        "errors": errors,
+    }
+    return result, errors
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, help="optional JSON output path")
+    args = parser.parse_args()
+
+    root = Path(__file__).resolve().parents[1]
+    result, errors = audit(root)
+    payload = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    print(payload, end="")
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(payload, encoding="utf-8")
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

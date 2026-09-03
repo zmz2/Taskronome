@@ -129,7 +129,7 @@
                                 <TextBlock Text="{DynamicResource CurrentTask}" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" />
                                 <TextBlock Grid.Row="1" Text="{Binding CurrentTaskName}" FontSize="30" FontWeight="Bold" TextAlignment="Center" TextWrapping="Wrap" Margin="12,8" />
                                 <TextBlock Grid.Row="2" Text="{Binding RemainingText}" FontFamily="Consolas" FontSize="66" FontWeight="SemiBold" TextAlignment="Center" Margin="0,4,0,12" />
-                                <ProgressBar Grid.Row="3" Height="12" Maximum="100" Value="{Binding ProgressPercent}" />
+                                <ProgressBar Grid.Row="3" Height="12" Maximum="100" Value="{Binding ProgressPercent, Mode=OneWay}" />
                             </Grid>
                         </Border>
 
@@ -269,7 +269,7 @@
                         <Border Style="{StaticResource CardBorder}" Margin="0,14,0,0">
                             <StackPanel>
                                 <TextBlock Text="{DynamicResource DataLocation}" FontSize="19" FontWeight="Bold" />
-                                <TextBox Text="{Binding DataDirectory}" IsReadOnly="True" Margin="0,10,0,10" />
+                                <TextBox Text="{Binding DataDirectory, Mode=OneWay}" IsReadOnly="True" Margin="0,10,0,10" />
                                 <Button Content="{DynamicResource OpenDataFolder}" HorizontalAlignment="Left" Click="OpenDataFolderButton_Click" />
                             </StackPanel>
                         </Border>

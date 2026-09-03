@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -48,15 +49,31 @@ public sealed class TaskronomeData
     public RotationCheckpoint? Checkpoint { get; set; }
 }
 
+public interface IStateStore
+{
+    string DirectoryPath { get; }
+
+    string DataFilePath { get; }
+
+    string BackupFilePath { get; }
+
+    DataLoadResult Load();
+
+    void Save(TaskronomeData data);
+}
+
 public sealed record DataLoadResult(
     TaskronomeData Data,
     bool RecoveredFromCorruption,
-    string? CorruptFilePath);
+    string? CorruptFilePath,
+    bool RecoveredFromBackup = false,
+    string? CorruptBackupFilePath = null);
 
-public sealed class JsonFileDataStore
+public sealed class JsonFileDataStore : IStateStore
 {
-    private readonly object _gate = new();
+    private static readonly ConcurrentDictionary<string, object> Gates = new(StringComparer.OrdinalIgnoreCase);
     private readonly JsonSerializerOptions _serializerOptions;
+    private readonly object _gate;
 
     public JsonFileDataStore(string directoryPath)
     {
@@ -68,6 +85,7 @@ public sealed class JsonFileDataStore
         DirectoryPath = Path.GetFullPath(directoryPath);
         DataFilePath = Path.Combine(DirectoryPath, "data.json");
         BackupFilePath = Path.Combine(DirectoryPath, "data.json.bak");
+        _gate = Gates.GetOrAdd(DirectoryPath, static _ => new object());
         _serializerOptions = CreateSerializerOptions();
     }
 
@@ -84,21 +102,47 @@ public sealed class JsonFileDataStore
             Directory.CreateDirectory(DirectoryPath);
             if (!File.Exists(DataFilePath))
             {
+                if (File.Exists(BackupFilePath))
+                {
+                    try
+                    {
+                        var backupData = ReadAndNormalizeLocked(BackupFilePath);
+                        RestoreBackupAsMainLocked();
+                        return new DataLoadResult(backupData, true, null, true, null);
+                    }
+                    catch (Exception backupException) when (backupException is JsonException or InvalidDataException)
+                    {
+                        var corruptBackupPath = PreserveCorruptFileLocked(BackupFilePath, isBackup: true);
+                        return new DataLoadResult(new TaskronomeData(), true, null, false, corruptBackupPath);
+                    }
+                }
+
                 return new DataLoadResult(new TaskronomeData(), false, null);
             }
 
             try
             {
-                var json = File.ReadAllText(DataFilePath);
-                var data = JsonSerializer.Deserialize<TaskronomeData>(json, _serializerOptions)
-                           ?? throw new InvalidDataException("The data file contained no object.");
-                Normalize(data);
-                return new DataLoadResult(data, false, null);
+                return new DataLoadResult(ReadAndNormalizeLocked(DataFilePath), false, null);
             }
-            catch (Exception exception) when (exception is JsonException or IOException or InvalidDataException or UnauthorizedAccessException)
+            catch (Exception parseException) when (parseException is JsonException or InvalidDataException)
             {
-                var corruptPath = PreserveCorruptFileLocked();
-                return new DataLoadResult(new TaskronomeData(), true, corruptPath);
+                var corruptPath = PreserveCorruptFileLocked(DataFilePath, isBackup: false);
+                if (!File.Exists(BackupFilePath))
+                {
+                    return new DataLoadResult(new TaskronomeData(), true, corruptPath);
+                }
+
+                try
+                {
+                    var backupData = ReadAndNormalizeLocked(BackupFilePath);
+                    RestoreBackupAsMainLocked();
+                    return new DataLoadResult(backupData, true, corruptPath, true, null);
+                }
+                catch (Exception backupException) when (backupException is JsonException or InvalidDataException)
+                {
+                    var corruptBackupPath = PreserveCorruptFileLocked(BackupFilePath, isBackup: true);
+                    return new DataLoadResult(new TaskronomeData(), true, corruptPath, false, corruptBackupPath);
+                }
             }
         }
     }
@@ -132,10 +176,15 @@ public sealed class JsonFileDataStore
 
                 if (File.Exists(DataFilePath))
                 {
+                    // Keep the last known-good document before replacing the live file. The
+                    // replacement itself is performed by the platform atomic replace API.
                     File.Copy(DataFilePath, BackupFilePath, overwrite: true);
+                    File.Replace(temporaryPath, DataFilePath, destinationBackupFileName: null, ignoreMetadataErrors: true);
                 }
-
-                File.Move(temporaryPath, DataFilePath, overwrite: true);
+                else
+                {
+                    File.Move(temporaryPath, DataFilePath, overwrite: false);
+                }
             }
             finally
             {
@@ -147,24 +196,45 @@ public sealed class JsonFileDataStore
         }
     }
 
-    private string? PreserveCorruptFileLocked()
+    private TaskronomeData ReadAndNormalizeLocked(string path)
     {
-        if (!File.Exists(DataFilePath))
+        // Keep file-system failures outside the corruption handler. A permission or
+        // transient I/O failure is not evidence that the user's JSON is malformed.
+        var json = File.ReadAllText(path);
+        var data = JsonSerializer.Deserialize<TaskronomeData>(json, _serializerOptions)
+                   ?? throw new InvalidDataException("The data file contained no object.");
+        Normalize(data);
+        return data;
+    }
+
+    private void RestoreBackupAsMainLocked()
+    {
+        // The backup remains in place as the recovery source for a subsequent failure.
+        // Copying is deliberately best-effort only after a valid backup has been read;
+        // failure is propagated as I/O rather than being mislabeled as corruption.
+        File.Copy(BackupFilePath, DataFilePath, overwrite: true);
+    }
+
+    private string PreserveCorruptFileLocked(string sourcePath, bool isBackup)
+    {
+        if (!File.Exists(sourcePath))
         {
-            return null;
+            throw new FileNotFoundException("The corrupt file disappeared before it could be preserved.", sourcePath);
         }
 
         var timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss-fff", System.Globalization.CultureInfo.InvariantCulture);
-        var corruptPath = Path.Combine(DirectoryPath, $"data.corrupt-{timestamp}.json");
+        var prefix = isBackup ? "data.bak.corrupt" : "data.corrupt";
+        var corruptPath = Path.Combine(DirectoryPath, $"{prefix}-{timestamp}-{Guid.NewGuid():N}.json");
         try
         {
-            File.Move(DataFilePath, corruptPath, overwrite: false);
+            File.Move(sourcePath, corruptPath, overwrite: false);
             return corruptPath;
         }
         catch (IOException)
         {
-            File.Copy(DataFilePath, corruptPath, overwrite: true);
-            File.Delete(DataFilePath);
+            // If a move is unavailable (for example, because another process has the
+            // file open), preserve a forensic copy but never delete the user's source.
+            File.Copy(sourcePath, corruptPath, overwrite: false);
             return corruptPath;
         }
     }
@@ -181,6 +251,11 @@ public sealed class JsonFileDataStore
         data.Tasks ??= new List<TaskItem>();
         data.WorkSegments ??= new List<WorkSegment>();
         data.Events ??= new List<RotationEvent>();
+
+        if (data.Tasks.Any(task => task is null))
+        {
+            throw new InvalidDataException("The data file contained a null task.");
+        }
 
         var duplicateTask = data.Tasks.GroupBy(task => task.Id).FirstOrDefault(group => group.Count() > 1);
         if (duplicateTask is not null)
@@ -199,7 +274,66 @@ public sealed class JsonFileDataStore
             task.Name = task.Name.Trim();
         }
 
+        foreach (var segment in data.WorkSegments)
+        {
+            if (!IsValidWorkSegment(segment))
+            {
+                throw new InvalidDataException("The data file contained an invalid work segment.");
+            }
+        }
+
+        foreach (var item in data.Events)
+        {
+            if (item is null || !Enum.IsDefined(item.Type))
+            {
+                throw new InvalidDataException("The data file contained an invalid rotation event.");
+            }
+        }
+
+        if (data.Checkpoint is not null)
+        {
+            if (data.Checkpoint.SchemaVersion is < 1 or > 1 ||
+                !Enum.IsDefined(data.Checkpoint.State) ||
+                (data.Checkpoint.StateBeforeSystemPause is not null &&
+                 !Enum.IsDefined(data.Checkpoint.StateBeforeSystemPause.Value)) ||
+                (data.Checkpoint.SystemPauseReason is not null &&
+                 !Enum.IsDefined(data.Checkpoint.SystemPauseReason.Value)) ||
+                data.Checkpoint.Remaining < TimeSpan.Zero ||
+                data.Checkpoint.CurrentRunAccumulated < TimeSpan.Zero)
+            {
+                throw new InvalidDataException("The data file contained an invalid rotation checkpoint.");
+            }
+
+            var checkpointTask = data.Tasks.FirstOrDefault(task => task.Id == data.Checkpoint.CurrentTaskId);
+            if (checkpointTask is not null &&
+                (data.Checkpoint.Remaining > checkpointTask.SliceDuration ||
+                 data.Checkpoint.CurrentRunAccumulated > checkpointTask.SliceDuration))
+            {
+                throw new InvalidDataException("The data file contained a checkpoint beyond the current slice.");
+            }
+        }
+
         data.SchemaVersion = TaskronomeData.CurrentSchemaVersion;
+    }
+
+    private static bool IsValidWorkSegment(WorkSegment? segment)
+    {
+        if (segment is null ||
+            !Enum.IsDefined(segment.EndReason) ||
+            segment.Duration < TimeSpan.Zero ||
+            segment.EndedAtUtc < segment.StartedAtUtc)
+        {
+            return false;
+        }
+
+        try
+        {
+            return segment.Duration <= segment.EndedAtUtc - segment.StartedAtUtc;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
     }
 
     private static JsonSerializerOptions CreateSerializerOptions()
@@ -210,6 +344,7 @@ public sealed class JsonFileDataStore
             WriteIndented = true,
             AllowTrailingCommas = true,
             ReadCommentHandling = JsonCommentHandling.Skip,
+            NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
         };
         options.Converters.Add(new JsonStringEnumConverter());
         return options;

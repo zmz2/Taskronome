@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Taskronome.Core;
 
@@ -37,8 +38,8 @@ public sealed class PersistenceTests
                         Guid.NewGuid(),
                         task.Id,
                         task.Name,
-                        DateTimeOffset.Parse("2026-09-03T01:00:00Z"),
-                        DateTimeOffset.Parse("2026-09-03T01:00:05Z"),
+                        DateTimeOffset.Parse("2026-09-03T01:00:00Z", CultureInfo.InvariantCulture),
+                        DateTimeOffset.Parse("2026-09-03T01:00:05Z", CultureInfo.InvariantCulture),
                         TimeSpan.FromSeconds(5),
                         WorkEndReason.ManualPause),
                 },
@@ -46,7 +47,7 @@ public sealed class PersistenceTests
                 {
                     new(
                         Guid.NewGuid(),
-                        DateTimeOffset.Parse("2026-09-03T01:00:05Z"),
+                        DateTimeOffset.Parse("2026-09-03T01:00:05Z", CultureInfo.InvariantCulture),
                         RotationEventType.ManualPaused,
                         task.Id,
                         task.Name,
@@ -159,14 +160,9 @@ public sealed class PersistenceTests
         {
             var store = new JsonFileDataStore(directory);
             Directory.CreateDirectory(directory);
-            var invalid = new TaskronomeData
-            {
-                Tasks = new List<TaskItem>
-                {
-                    new() { Name = string.Empty, SliceDuration = TimeSpan.Zero },
-                },
-            };
-            File.WriteAllText(store.DataFilePath, JsonSerializer.Serialize(invalid));
+            File.WriteAllText(
+                store.DataFilePath,
+                "{\"SchemaVersion\":1,\"Tasks\":[{\"Name\":\"\",\"SliceDuration\":\"00:00:00\"}]}");
 
             var result = store.Load();
 
@@ -192,8 +188,8 @@ public sealed class PersistenceTests
             Notes = "notes",
             SliceDuration = TimeSpan.FromMinutes(20),
             Order = 0,
-            CreatedAtUtc = DateTimeOffset.Parse("2026-09-03T00:00:00Z"),
-            UpdatedAtUtc = DateTimeOffset.Parse("2026-09-03T00:00:00Z"),
+            CreatedAtUtc = DateTimeOffset.Parse("2026-09-03T00:00:00Z", CultureInfo.InvariantCulture),
+            UpdatedAtUtc = DateTimeOffset.Parse("2026-09-03T00:00:00Z", CultureInfo.InvariantCulture),
         };
     }
 }

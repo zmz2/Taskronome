@@ -35,13 +35,20 @@ Taskronome 是一款面向 Windows 10/11 的桌面时间片轮转应用。它让
 
 ## 从源码验证
 
-需要 Windows、PowerShell 7、.NET SDK 10.0.400。完整验证命令：
+需要 Windows、PowerShell 7、.NET SDK 10.0.400，以及运行源码审计所需的 Python 3。完整验证并打包命令：
 
 ```powershell
-pwsh ./scripts/verify.ps1
+pwsh -NoProfile -File .\scripts\bootstrap-and-verify.ps1 -Package
 ```
 
-该命令依次执行依赖恢复、格式检查、Release 构建、单元测试、Core 行覆盖率门槛、真实短时间片场景、win-x64 自包含发布和 WPF 启动烟雾测试。
+该命令依次执行源码审计、NuGet locked restore、格式检查、Release 构建、确定性测试、Core 行/分支覆盖率门槛、真实 2 秒/3 秒短时间片场景、win-x64 自包含发布、WPF 启动与单实例 smoke，并生成便携包和 Inno Setup 安装器。打包还需要本机安装 Inno Setup 6/7。
+
+只做验证时可运行：
+
+```powershell
+pwsh -NoProfile -File .\scripts\verify.ps1
+python .\scripts\assistant-source-audit.py
+```
 
 构建便携包及按用户安装器：
 
@@ -49,7 +56,7 @@ pwsh ./scripts/verify.ps1
 pwsh ./scripts/package.ps1 -Version 1.0.0
 ```
 
-安装器使用 Inno Setup，默认安装到当前用户的 `%LOCALAPPDATA%\Programs\Taskronome`，不请求管理员权限。产物和 SHA-256 校验值位于 `artifacts/dist/`。
+安装器使用 Inno Setup，默认安装到当前用户的 `%LOCALAPPDATA%\Programs\Taskronome`，不请求管理员权限。产物和 SHA-256 校验值位于 `artifacts/dist/`，文件名为 `Taskronome-1.0.0-win-x64-portable.zip` 与 `Taskronome-1.0.0-win-x64-setup.exe`。
 
 ## 项目结构
 
@@ -61,6 +68,8 @@ scripts/                   一键验证和打包脚本
 installer/                 Inno Setup 按用户安装器
 docs/                      架构、测试、人工验收与交接说明
 ```
+
+自动化测试策略见 [docs/TEST_PLAN.md](docs/TEST_PLAN.md)，Windows 人工验收见 [docs/MANUAL_TEST_CHECKLIST.md](docs/MANUAL_TEST_CHECKLIST.md)，最终真实结果见 [docs/TEST_REPORT.md](docs/TEST_REPORT.md)。
 
 ## 本地数据
 

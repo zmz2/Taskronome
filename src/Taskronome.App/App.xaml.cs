@@ -1,13 +1,17 @@
+using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Threading;
 using Taskronome.App.Services;
 using Taskronome.App.ViewModels;
 using Taskronome.Core;
+using WpfMessageBox = System.Windows.MessageBox;
 
 namespace Taskronome.App;
 
-public partial class App : Application
+public partial class App : System.Windows.Application, IDisposable
 {
+    private static readonly JsonSerializerOptions SmokeResultSerializerOptions = new() { WriteIndented = true };
     private FileLogger? _logger;
     private JsonFileDataStore? _dataStore;
     private SingleInstanceService? _singleInstance;
@@ -16,16 +20,48 @@ public partial class App : Application
     private MainWindow? _mainWindow;
     private DispatcherTimer? _smokeTimeout;
     private bool _smokeTestMode;
+    private bool _testMode;
+    private bool _notificationDryRun;
+    private bool _deleteSmokeData;
+    private int _smokeHoldMilliseconds;
+    private string? _smokeResultPath;
+    private string? _dataDirectory;
     private bool _exitRequested;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
-        _smokeTestMode = e.Args.Any(argument => string.Equals(argument, "--smoke-test", StringComparison.OrdinalIgnoreCase));
+        StartupOptions startupOptions;
+        try
+        {
+            startupOptions = StartupOptions.Parse(e.Args);
+        }
+        catch (ArgumentException exception)
+        {
+            WpfMessageBox.Show(
+                $"Taskronome 启动参数无效：{exception.Message}",
+                "Taskronome",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            Shutdown(1);
+            return;
+        }
 
-        var rootDirectory = _smokeTestMode
+        _smokeTestMode = startupOptions.UiSmoke;
+        _testMode = startupOptions.TestMode;
+        _notificationDryRun = startupOptions.NotificationDryRun;
+        _dataDirectory = startupOptions.DataDirectory;
+        _smokeResultPath = startupOptions.SmokeResultPath;
+        _smokeHoldMilliseconds = startupOptions.SmokeHoldMilliseconds;
+        _deleteSmokeData = _smokeTestMode && _dataDirectory is null;
+
+        var rootDirectory = _dataDirectory ?? (_smokeTestMode
             ? Path.Combine(Path.GetTempPath(), $"Taskronome-Smoke-{Guid.NewGuid():N}")
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Taskronome");
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Taskronome"));
+        if (_smokeTestMode && string.IsNullOrWhiteSpace(_smokeResultPath))
+        {
+            _smokeResultPath = Path.Combine(Path.GetTempPath(), $"Taskronome-UI-Smoke-{Guid.NewGuid():N}.json");
+        }
         _logger = new FileLogger(Path.Combine(rootDirectory, "logs"));
         _dataStore = new JsonFileDataStore(rootDirectory);
 
@@ -35,30 +71,42 @@ public partial class App : Application
 
         try
         {
-            if (!_smokeTestMode)
+            var singleInstance = new SingleInstanceService(_logger);
+            _singleInstance = singleInstance;
+            if (singleInstance.AcquisitionFailed)
             {
-                _singleInstance = new SingleInstanceService(_logger);
-                if (!_singleInstance.IsFirstInstance)
-                {
-                    _ = SingleInstanceService.SignalExistingInstance();
-                    Shutdown(0);
-                    return;
-                }
+                throw new InvalidOperationException("无法安全获取 Taskronome 单实例锁；为避免产生第二套计时器，应用不会继续启动。");
             }
 
-            _notificationService = new NotificationService(_logger);
+            if (!singleInstance.IsFirstInstance)
+            {
+                _ = SingleInstanceService.SignalExistingInstance();
+                Shutdown(0);
+                return;
+            }
+
+            _notificationService = new NotificationService(_logger, _notificationDryRun);
             _notificationService.Initialize();
-            _viewModel = new MainWindowViewModel(_dataStore, _logger);
-            _mainWindow = new MainWindow(_viewModel, _notificationService, _smokeTestMode);
+            var rotationOptions = _testMode
+                ? new RotationOptions
+                {
+                    ConfirmationTimeout = TimeSpan.FromSeconds(2),
+                    HeartbeatGapThreshold = TimeSpan.FromSeconds(5),
+                }
+                : null;
+            _viewModel = new MainWindowViewModel(_dataStore, _logger, rotationOptions: rotationOptions);
+            _mainWindow = new MainWindow(
+                _viewModel,
+                _notificationService,
+                _smokeTestMode,
+                _testMode,
+                _smokeHoldMilliseconds);
             MainWindow = _mainWindow;
 
-            if (_singleInstance is not null)
+            singleInstance.StartListening(() =>
             {
-                _singleInstance.StartListening(() =>
-                {
-                    Dispatcher.InvokeAsync(() => _mainWindow?.ActivateFromExternalRequest());
-                });
-            }
+                Dispatcher.InvokeAsync(() => _mainWindow?.ActivateFromExternalRequest());
+            });
 
             _mainWindow.Show();
 
@@ -78,10 +126,14 @@ public partial class App : Application
         }
         catch (Exception exception)
         {
-            _logger.Error("Application startup failed.", exception);
+            _logger.LogError("Application startup failed.", exception);
+            if (_smokeTestMode)
+            {
+                WriteSmokeResult(1, exception.Message);
+            }
             if (!_smokeTestMode)
             {
-                MessageBox.Show(
+                WpfMessageBox.Show(
                     $"Taskronome 启动失败：{exception.Message}\n\n日志目录：{_logger.DirectoryPath}",
                     "Taskronome",
                     MessageBoxButton.OK,
@@ -101,7 +153,7 @@ public partial class App : Application
 
         if (!_smokeTestMode && _viewModel?.IsActiveRotation == true)
         {
-            var result = MessageBox.Show(
+            var result = WpfMessageBox.Show(
                 _mainWindow,
                 "当前轮转仍在进行。退出前会安全暂停并保存，离线时间不会被计入。确定退出吗？",
                 "退出 Taskronome",
@@ -124,15 +176,16 @@ public partial class App : Application
             return;
         }
 
+        WriteSmokeResult(exitCode, exitCode == 0 ? null : "UI smoke assertions failed.");
         RequestExitCore(exitCode);
     }
 
     public void HandleRecoverableUiException(string message, Exception exception)
     {
-        _logger?.Error(message, exception);
+        _logger?.LogError(message, exception);
         if (!_smokeTestMode)
         {
-            MessageBox.Show(
+            WpfMessageBox.Show(
                 _mainWindow,
                 $"{message}\n\n{exception.Message}\n\n应用已尽力保持当前数据，请查看日志。",
                 "Taskronome",
@@ -160,9 +213,45 @@ public partial class App : Application
         Shutdown(exitCode);
     }
 
+    private void WriteSmokeResult(int exitCode, string? error)
+    {
+        if (!_smokeTestMode || string.IsNullOrWhiteSpace(_smokeResultPath))
+        {
+            return;
+        }
+
+        try
+        {
+            var result = new
+            {
+                result = exitCode == 0 ? "passed" : "failed",
+                exitCode,
+                testMode = _testMode,
+                notificationDryRun = _notificationDryRun,
+                dataDirectory = _dataStore?.DirectoryPath,
+                error,
+                generatedUtc = DateTimeOffset.UtcNow,
+            };
+            var parent = Path.GetDirectoryName(_smokeResultPath);
+            if (!string.IsNullOrWhiteSpace(parent))
+            {
+                Directory.CreateDirectory(parent);
+            }
+
+            File.WriteAllText(
+                _smokeResultPath,
+                JsonSerializer.Serialize(result, SmokeResultSerializerOptions),
+                new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _logger?.LogError("Unable to write the UI smoke result.", exception);
+        }
+    }
+
     private void App_DispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
-        _logger?.Error("Unhandled UI exception.", e.Exception);
+        _logger?.LogError("Unhandled UI exception.", e.Exception);
         if (_smokeTestMode)
         {
             e.Handled = true;
@@ -170,7 +259,7 @@ public partial class App : Application
             return;
         }
 
-        MessageBox.Show(
+        WpfMessageBox.Show(
             _mainWindow,
             $"发生未处理错误：{e.Exception.Message}\n\n应用将保存并退出。",
             "Taskronome",
@@ -184,13 +273,13 @@ public partial class App : Application
     {
         if (e.ExceptionObject is Exception exception)
         {
-            _logger?.Error("Unhandled process exception.", exception);
+            _logger?.LogError("Unhandled process exception.", exception);
         }
     }
 
     private void TaskScheduler_UnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
     {
-        _logger?.Error("Unobserved task exception.", e.Exception);
+        _logger?.LogError("Unobserved task exception.", e.Exception);
         e.SetObserved();
     }
 
@@ -206,7 +295,7 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException -= CurrentDomain_UnhandledException;
         TaskScheduler.UnobservedTaskException -= TaskScheduler_UnobservedTaskException;
 
-        if (_smokeTestMode && _dataStore is not null)
+        if (_deleteSmokeData && _dataStore is not null)
         {
             try
             {
@@ -214,10 +303,98 @@ public partial class App : Application
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                _logger?.Error("Unable to remove the temporary smoke-test directory.", exception);
+                _logger?.LogError("Unable to remove the temporary smoke-test directory.", exception);
             }
         }
 
         base.OnExit(e);
+    }
+
+    public void Dispose()
+    {
+        _smokeTimeout?.Stop();
+        _viewModel?.Dispose();
+        _notificationService?.Dispose();
+        _singleInstance?.Dispose();
+        GC.SuppressFinalize(this);
+    }
+
+    private sealed record StartupOptions(
+        bool UiSmoke,
+        bool TestMode,
+        bool NotificationDryRun,
+        string? DataDirectory,
+        string? SmokeResultPath,
+        int SmokeHoldMilliseconds)
+    {
+        public static StartupOptions Parse(string[] args)
+        {
+            ArgumentNullException.ThrowIfNull(args);
+            var uiSmoke = false;
+            var testMode = false;
+            var notificationDryRun = false;
+            string? dataDirectory = null;
+            string? smokeResultPath = null;
+            var smokeHoldMilliseconds = 0;
+
+            for (var index = 0; index < args.Length; index++)
+            {
+                switch (args[index].ToLowerInvariant())
+                {
+                    case "--smoke-test":
+                    case "--ui-smoke":
+                        uiSmoke = true;
+                        break;
+                    case "--test-mode":
+                        testMode = true;
+                        break;
+                    case "--notification-dry-run":
+                        notificationDryRun = true;
+                        break;
+                    case "--data-dir":
+                        dataDirectory = ReadPathArgument(args, ref index, "--data-dir");
+                        break;
+                    case "--smoke-result":
+                        smokeResultPath = ReadPathArgument(args, ref index, "--smoke-result");
+                        break;
+                    case "--smoke-hold-ms":
+                        smokeHoldMilliseconds = ReadIntegerArgument(args, ref index, "--smoke-hold-ms", 0, 30000);
+                        break;
+                    default:
+                        throw new ArgumentException($"未知启动参数：{args[index]}", nameof(args));
+                }
+            }
+
+            return new StartupOptions(
+                uiSmoke,
+                testMode,
+                notificationDryRun,
+                dataDirectory,
+                smokeResultPath,
+                smokeHoldMilliseconds);
+        }
+
+        private static string ReadPathArgument(string[] args, ref int index, string option)
+        {
+            if (index + 1 >= args.Length || string.IsNullOrWhiteSpace(args[++index]))
+            {
+                throw new ArgumentException($"启动参数 {option} 需要一个路径。", nameof(args));
+            }
+
+            return Path.GetFullPath(args[index]);
+        }
+
+        private static int ReadIntegerArgument(string[] args, ref int index, string option, int minimum, int maximum)
+        {
+            if (index + 1 >= args.Length ||
+                !int.TryParse(args[++index], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var value) ||
+                value < minimum ||
+                value > maximum)
+            {
+                throw new ArgumentException($"启动参数 {option} 必须是 {minimum}–{maximum} 之间的整数。", nameof(args));
+            }
+
+            return value;
+        }
     }
 }
