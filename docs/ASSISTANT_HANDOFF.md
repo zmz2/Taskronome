@@ -1,0 +1,52 @@
+# Assistant handoff
+
+This document describes the final implementation surface for the Windows handoff. The source remains the existing Taskronome implementation from the assistant branch, with the final branch adding validation, deterministic tests, Windows packaging, and delivery automation around it.
+
+## Delivery surface
+
+- `src/Taskronome.Core` is a WPF-free `net10.0` assembly containing the rotation state machine, monotonic-clock accounting, validation, CSV formatting, statistics, and atomic JSON persistence.
+- `src/Taskronome.App` is a `net10.0-windows10.0.19041.0` WPF application with Windows App SDK notifications, taskbar/sound/tray fallback, single-instance activation, window placement, and power/session interruption handling.
+- `MainWindow` supports a 400×300 logical-DIP minimum; `ResponsiveContentHost` and wrapped data-grid cells keep compact pages readable while preserving vertical scroll reachability.
+- `tests/Taskronome.Core.Tests` contains deterministic fake-clock tests for the state machine and persistence boundaries.
+- `tests/Taskronome.ScenarioRunner` is a real-time two-task acceptance scenario using 2-second and 3-second slices.
+- `scripts/bootstrap-and-verify.ps1` is the single local gate. With `-Package` it also creates the portable ZIP, Inno Setup installer, manifest, and checksums.
+- `scripts/windows-interactive-acceptance.ps1` is the reusable production-mode Windows UI Automation/watchdog harness. It targets a supplied CI package executable, uses an isolated data directory, and emits structured manual evidence without a production backdoor.
+- Pass `-WindowLayoutOnly` to run only the focused four-size/four-tab responsive layout matrix without repeating the rotation, notification, tray, or interruption flows.
+- `.github/workflows/ci.yml` runs the same gate on Windows pull requests and development branches. `.github/workflows/release.yml` packages versioned tags.
+
+## Non-negotiable invariants
+
+Only `Running` can add to a work segment. Confirmation, manual pause, absence, system pause, idle, completed, lock, sleep, session disconnect, restart, and untrusted heartbeat gaps add no time. Every turn requires an in-app confirmation; a notification activation only brings the window forward. The Core engine uses a monotonic clock for elapsed time and treats wall-clock timestamps as metadata.
+
+The app checkpoints the active state periodically and on exit. Restarting from `Running` or `AwaitingConfirmation` conservatively records an interruption and enters `PausedSystem`; time between the checkpoint and restart is never reconstructed.
+
+## Required local commands
+
+Run these from a Windows PowerShell 7 shell at the repository root:
+
+```powershell
+pwsh -NoProfile -File .\scripts\bootstrap-and-verify.ps1 -Package
+dotnet --info
+dotnet restore --locked-mode
+dotnet build -c Release --no-restore
+dotnet test -c Release --no-build --logger "trx;LogFileName=final-tests.trx"
+git diff --check
+python .\scripts\assistant-source-audit.py
+```
+
+The command output and machine-specific results belong in `docs/TEST_REPORT.md` or the immutable final evidence ZIP; never turn an unexecuted manual item into a claim. Release-blocking results use only Pass, Fail, or evidence-backed N/A.
+
+## Packaging contract
+
+The package directory is `artifacts/dist/` and contains:
+
+- `Taskronome-<version>-win-x64-portable.zip`;
+- `Taskronome-<version>-win-x64-setup.exe`;
+- `SHA256SUMS.txt`;
+- `package-manifest.json`.
+
+The portable package excludes PDB files. The installer is per-user (`PrivilegesRequired=lowest`) and installs under `%LOCALAPPDATA%\Programs\Taskronome`. It does not remove `%LOCALAPPDATA%\Taskronome` during uninstall. Official downloads must be checked against the `SHA256SUMS.txt` uploaded by the same successful workflow that produced the files; local hashes are build evidence only.
+
+## Known environment-dependent checks
+
+Real notification-center delivery, notification permission changes, lock/sleep/session disconnect, multi-monitor removal, installer UX, and SmartScreen presentation require an interactive Windows session. The canonical checklist and acceptance harness record the exact Windows build, date, tester, evidence path, and Pass/Fail/N/A status for those checks.

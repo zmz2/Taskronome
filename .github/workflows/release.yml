@@ -1,0 +1,84 @@
+name: Taskronome release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic version without the v prefix"
+        required: true
+        default: "1.0.0"
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Install Python for source audit
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Resolve release version and tag
+        id: release_meta
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if ($env:EVENT_NAME -eq 'workflow_dispatch') {
+            $version = $env:INPUT_VERSION.Trim()
+            if ($version.StartsWith('v')) {
+              $version = $version.Substring(1)
+            }
+            $tagName = "v$version"
+          }
+          else {
+            $tagName = $env:REF_NAME
+            if (-not $tagName.StartsWith('v')) {
+              throw "A tag push release must use a v-prefixed tag."
+            }
+            $version = $tagName.Substring(1)
+          }
+
+          if ($version -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') {
+            throw "Version must be a semantic version such as 1.0.0."
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag_name=$tagName" >> $env:GITHUB_OUTPUT
+
+      - name: Verify and package release
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.release_meta.outputs.version }}
+        run: |
+          ./scripts/bootstrap-and-verify.ps1 -Package -Version $env:RELEASE_VERSION
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_meta.outputs.tag_name }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.release_meta.outputs.tag_name }}
+          files: artifacts/dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

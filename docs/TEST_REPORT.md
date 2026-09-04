@@ -1,0 +1,139 @@
+# Taskronome final test report
+
+本报告只记录提交时 Windows 工作区中实际执行的结果。自动化结果来自 artifacts/ 产物；不能由当时环境执行的原生 Windows 手工项明确标记为 Not run，没有用 CI 或源码审阅替代人工观察。PR #2 的最终 post-CI 原生交互验收由 `scripts/windows-interactive-acceptance.ps1` 针对同一 CI artifact 生成，并通过 PR 评论和独立证据 ZIP 发布；该 run-specific 证据不写回本文件，以避免验收后再产生改变待合并 HEAD 的文档提交。
+
+## Environment
+
+- Test date: 2026-09-03 (Asia/Shanghai, UTC+08:00)
+- OS: Windows 11 专业版, build 10.0.26200
+- Architecture/RID: x64 / win-x64
+- .NET SDK: 10.0.400
+- .NET runtime: 10.0.11 (Microsoft.WindowsDesktop.App)
+- PowerShell: 7.6.4
+- Repository: https://github.com/zmz2/Taskronome.git
+- Validation snapshot: current local Windows worktree after the checkpoint and release-packaging follow-up; the immutable CI commit, run, artifact, and checksum record is maintained in PR #2 rather than copied into this static report
+
+## Commands executed
+
+The following commands were run from D:\VibeCodingTools\Taskronome with the local .NET 10.0.400 SDK selected through DOTNET_ROOT:
+
+    pwsh -NoProfile -File .\scripts\bootstrap-and-verify.ps1 -Package -Version 1.0.0
+    dotnet --info
+    dotnet restore --locked-mode
+    dotnet build -c Release --no-restore
+    dotnet test -c Release --no-build --logger "trx;LogFileName=final-tests.trx"
+    git diff --check
+    python .\scripts\assistant-source-audit.py
+
+The standalone command output is retained in [root-final-commands.log](../artifacts/root-final-commands.log). The complete unified gate output is retained by the verification artifacts and the terminal run that produced [verification-summary.json](../artifacts/verification-summary.json).
+
+## Responsive layout verification for this change
+
+The focused Windows layout command was run against a self-contained local `win-x64` publish of the current worktree:
+
+    pwsh -NoProfile -File .\scripts\windows-interactive-acceptance.ps1 -AppPath .\artifacts\layout-publish\Taskronome.exe -AcceptanceRoot .\artifacts\window-layout-acceptance -WindowLayoutOnly
+
+It completed 48/48 checks with 0 failures: 400×300, 480×360, 640×480, and 1040×720 logical WPF DIP at the Tasks, Running, Statistics, and Settings tabs, with top/middle/bottom scroll positions for every tab. The fixture included long Chinese and English task names/notes, a feedback string, a data path, and a statistics event. The check verified DPI-aware physical sizing, readable UI Automation text, visible table descendants, horizontal containment inside the main HWND, and vertical scroll reachability; the corresponding screenshots were inspected for the 400×300 DIP case. The run-specific JSON, Markdown, screenshots, logs, data snapshots, checksum file, and evidence ZIP remain under the local `artifacts/window-layout-acceptance-*` output and are intentionally not copied into this static report, just as CI run IDs are not pinned here.
+
+## Automated results
+
+| Gate | Result | Actual evidence |
+|---|---|---|
+| Source audit | Passed | requiredFileCount=24, projectCount=4, four lock files, testAttributeCount=87, no source markers, no developer absolute paths; [source-audit.json](../artifacts/source-audit.json) |
+| Locked restore | Passed | dotnet restore --locked-mode and the bootstrap gate both completed successfully |
+| Format | Passed | dotnet format Taskronome.sln --verify-no-changes --no-restore --severity warn |
+| Release build | Passed | dotnet build Taskronome.sln --configuration Release --no-restore; 0 warnings, 0 errors |
+| Deterministic tests | Passed | 88 total, 88 executed, 88 passed, 0 failed, 0 skipped; [final-tests.trx](../artifacts/test-results/final-tests.trx) and the project-level root command TRX |
+| Core line coverage | Passed | 95.62%, threshold 85%; coverage.cobertura.xml below artifacts/test-results/ |
+| Core branch coverage | Passed | 81.84%, threshold 75%; coverage.cobertura.xml below artifacts/test-results/ |
+| Real 2s/3s scenario | Passed | 9,842.9 ms wall elapsed, 5,687.4 ms recorded work, 6 segments, 20 events; [scenario-result.json](../artifacts/scenario/scenario-result.json) |
+| Published UI smoke | Passed | Actual WPF self-contained EXE started and exited with code 0; smoke result passed; [summary.json](../artifacts/ui-smoke/summary.json) |
+| Responsive window layout-only matrix | Passed | 48/48 focused checks passed across four logical sizes and four tabs; run-specific screenshots and structured evidence are kept under the local `artifacts/window-layout-acceptance-*` output |
+| Single-instance smoke | Passed | First process exit 0, second process exit 0, second launch signalled the first instance; [summary.json](../artifacts/ui-smoke/summary.json) |
+| Portable ZIP E2E | Passed | ZIP was extracted to a fresh directory and the extracted self-contained EXE returned 0 with a passing smoke result; [portable-e2e-result.json](../artifacts/portable-e2e-3bf9e8c7b1d44dbd9e35ff6c4a3cf4b4/portable-e2e-result.json) |
+| GitHub Actions Windows gate | Passed in the prior validation snapshot | The exact current CI run, uploaded artifact, and its checksum file are recorded in the final PR comment; this committed report intentionally avoids embedding a run ID so documentation commits do not create a run-ID chase |
+
+The test attribute audit found 87 [Fact]/[Theory] attributes; xUnit executed 88 cases because one theory expands to multiple data cases. There were no skipped tests, so no release exception is required.
+
+### Scenario observations
+
+The real scenario used task A with a 2-second slice and task B with a 3-second slice. The recorded timeline shows:
+
+- start entered AwaitingConfirmation for A with 0 ms recorded;
+- waiting for confirmation left the recorded total unchanged at 0 ms;
+- confirming A produced a 2,000 ms running segment;
+- B entered confirmation after A expired;
+- manual pause froze B at 2,143.6 ms remaining, and the following wait did not increase the recorded total;
+- early completion removed B from future rotation without marking the time slice as naturally completed;
+- confirmation timeout entered PausedAbsent, and the absence wait left the recorded total unchanged;
+- resuming required a fresh confirmation for A;
+- final completion persisted and reloaded with the same completed state, six segments and 20 events.
+
+The deterministic suite covers the deadline boundary, monotonic timing, confirmation gates, manual/system/absence pauses, heartbeat gaps, restart recovery, idempotence, task validation, statistics/date boundaries, CSV escaping, atomic persistence, backup recovery, corruption isolation, I/O failures, and concurrent saves.
+
+## Windows manual checklist
+
+The required manual checklist is [MANUAL_TEST_CHECKLIST.md](MANUAL_TEST_CHECKLIST.md). The requested native UI session could not be executed in this Codex environment: the installed computer-use skill initialized, but both attempts to enumerate the Windows target returned the concrete service error Trusted RPC service is not configured: sky. No UI action was issued after that error, so the following items are honestly recorded as Not run rather than inferred from the automated smoke test.
+
+| # | Manual check | Result | Evidence/reason |
+|---:|---|---|---|
+| 1 | Windows system notification appears | Not run | Native UI service unavailable; automated smoke used notification dry-run |
+| 2 | Notification title is 轮到：任务名 | Not run | Native notification surface not observable |
+| 3 | Notification body is correct | Not run | Native notification surface not observable |
+| 4 | Clicking notification restores/focuses confirmation | Not run | Native UI service unavailable |
+| 5 | Clicking notification does not auto-start | Not run | Native UI service unavailable; activation semantics are unit-tested |
+| 6 | Notification permission disabled does not crash | Not run | OS permission UI was not automated |
+| 7 | Notification failure fallback works | Not run | Native notification surface not observable |
+| 8 | Default always-on-top | Not run | Visual/manual interaction unavailable |
+| 9 | Toggle always-on-top | Not run | Visual/manual interaction unavailable |
+| 10 | Always-on-top persists after restart | Not run | Visual/manual interaction unavailable |
+| 11 | Closing window enters tray without stopping | Not run | Tray interaction unavailable |
+| 12 | Tray double-click restores window | Not run | Tray interaction unavailable |
+| 13 | Tray menu actions work | Not run | Tray interaction unavailable |
+| 14 | Second instance does not create a second timer | Automated pass; manual not run | artifacts/ui-smoke/summary.json proves the two-process smoke path |
+| 15 | Second instance wakes the first | Automated pass; manual not run | artifacts/ui-smoke/summary.json and SHOW signalling path |
+| 16 | Ctrl+N, Ctrl+Shift+T, Enter and Space follow state | Not run | Native keyboard UI unavailable |
+| 17 | Space in text input does not pause | Not run | Native keyboard UI unavailable |
+| 18 | Lock screen pauses conservatively | Not run | Lock screen cannot be exercised through the available UI service |
+| 19 | Unlock does not auto-resume | Not run | Lock screen cannot be exercised through the available UI service |
+| 20 | Sleep/wake does not backfill | Not run | Power transition not exercised |
+| 21 | Session disconnect does not keep accruing | Not run | Session transition not exercised |
+| 22 | Forced exit/restart enters PausedSystem | Not run | Native restart interaction unavailable |
+| 23 | Multi-monitor changes keep window visible | Not run | No multi-monitor UI session available |
+| 24 | 125%/150%/200% scaling controls remain usable | Not run | Display scaling was not changed |
+| 25 | Chinese/long names and notes preserve layout | Not run | Visual layout unavailable; installer path with Chinese and spaces was tested separately |
+| 26 | Confirmation UI is prominent and keyboard focus is correct | Not run | Visual/accessibility observation unavailable |
+
+The Windows application process itself was started from the self-contained publish output during the automated WPF smoke run, and the package/installer E2E runs below also started the installed/extracted executable. Those checks validate process startup and command-line smoke behavior, but they do not substitute for the visual, tray, notification, power-state, DPI, or multi-monitor observations above.
+
+## Installer and data-safety E2E
+
+The generated Inno installer was run silently into this fresh path containing spaces and Chinese characters:
+
+    C:\Users\31774\AppData\Local\Temp\Taskronome E2E 空格 中文 7e66b70336b74c97a4f446a8cf6bab25
+
+The installed self-contained executable ran with a passing smoke result and exit code 0. A sentinel file in an external data directory was present before uninstall and remained after uninstall. The uninstaller returned exit code 0; Inno first recorded a transient directory-delete retry, then removed the installation directory and logged Removed all? Yes. Evidence:
+
+- [installer-result.json](../artifacts/installer-e2e-final/installer-result.json)
+- [install.log](../artifacts/installer-e2e-final/install.log)
+- [installed-smoke-result2.json](../artifacts/installer-e2e-final/installed-smoke-result2.json)
+- [uninstall.log](../artifacts/installer-e2e-final/uninstall.log)
+
+The package script also checked the ZIP entries and rejected source, test, artifact, user-data, PDB, and developer-absolute-path entries. The package is self-contained and uses the per-user Inno setup configuration in installer/Taskronome.iss.
+
+## Packaging and checksums
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| Taskronome-1.0.0-win-x64-portable.zip | 132,062,160 | 8c8180d99c0361e92ab175e92bcc203c411646a2d1e30cd87c2a1e4063348b31 |
+| Taskronome-1.0.0-win-x64-setup.exe | 89,174,457 | afd75224de75226252b08272fa07e4ead64c9843f048cbf5253c99be604f22bc |
+
+The package manifest and [SHA256SUMS.txt](../artifacts/dist/SHA256SUMS.txt) were generated by scripts/package.ps1; the manifest records the same byte counts and hashes in [package-manifest.json](../artifacts/dist/package-manifest.json). These hashes are local build evidence only, not final CI or formal Release checksums. For an official download, use the `SHA256SUMS.txt` uploaded by the same successful workflow run as the downloaded file.
+
+## Limitations and delivery state
+
+The committed manual table above is the historical pre-harness baseline. For the final release decision, use the immutable post-CI `manual-acceptance.json`, `manual-acceptance.md`, `SHA256SUMS.txt`, and evidence ZIP named in the final PR #2 comment. The tracked report intentionally does not promote an old CI run or old package hash to current-final status.
+
+1. Native Computer Use could not connect because the sky trusted RPC service was not configured. Consequently, the manual Windows checklist items that require visual UI, tray, notifications, power transitions, display changes, or keyboard interaction remain Not run.
+2. The automated WPF smoke path, real monotonic-clock scenario, extracted portable executable, installed executable, and uninstaller all passed. These are process/runtime checks and are intentionally not reported as visual manual passes.
+3. The current CI run, final artifact, and internal `SHA256SUMS.txt` are maintained in the final PR comment rather than copied into this static report; this prevents each documentation-only update from chasing a new run ID. Pull Request: https://github.com/zmz2/Taskronome/pull/2. The implementation is not merged into main.

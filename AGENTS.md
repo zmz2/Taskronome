@@ -25,8 +25,9 @@ Implement and maintain the complete Windows desktop application described in Git
 
 Create and keep these commands working:
 
-- `pwsh ./scripts/verify.ps1` — restore, format check, Release build, all tests, coverage gates, real short-duration scenario, publish, and Windows UI smoke.
-- `pwsh ./scripts/package.ps1` — produce the portable win-x64 ZIP, per-user Inno Setup installer, and SHA-256 checksums.
+- `pwsh -NoProfile -File ./scripts/bootstrap-and-verify.ps1 -Package` — source audit, locked restore, format check, Release build, all tests, coverage gates, real short-duration scenario, publish, Windows UI/single-instance smoke, portable win-x64 ZIP, per-user Inno Setup installer, and SHA-256 checksums.
+- `pwsh -NoProfile -File ./scripts/verify.ps1` — run the same validation gates without packaging.
+- `pwsh -NoProfile -File ./scripts/package.ps1 -Version 1.0.0` — produce the portable win-x64 ZIP, per-user Inno Setup installer, and SHA-256 checksums after validation.
 
 GitHub Actions on `windows-latest` must run the same gates and upload logs, test results, coverage, the portable package, and the installer. Fix failures and rerun until CI is green. Never claim a visual/manual Windows check unless it was actually performed.
 

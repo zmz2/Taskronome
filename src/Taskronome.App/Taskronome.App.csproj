@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>Taskronome</AssemblyName>
+    <RootNamespace>Taskronome.App</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\Taskronome.ico</ApplicationIcon>
+    <Description>Strict round-robin time-slice task manager for Windows.</Description>
+    <Product>Taskronome</Product>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <PublishSingleFile>false</PublishSingleFile>
+    <NoWarn>$(NoWarn);CA1014</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Taskronome.Core\Taskronome.Core.csproj" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Microsoft.WindowsAppSDK 2.4.0 omits this satellite from the Foundation
+         component even though the self-contained native runtime loads it. Keep
+         the matching, audited x64 file beside the app so unpackaged notifications
+         work on a clean machine and in the portable package. -->
+    <Content Include="Runtime\Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+             Link="Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="Always" />
+  </ItemGroup>
+</Project>

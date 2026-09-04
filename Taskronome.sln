@@ -1,0 +1,36 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.0.0.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Taskronome.Core", "src\Taskronome.Core\Taskronome.Core.csproj", "{8C24F7A8-78E2-4E11-B8E0-986951679E5E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Taskronome.App", "src\Taskronome.App\Taskronome.App.csproj", "{480F5B20-908C-4D15-B85A-147972361105}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Taskronome.Core.Tests", "tests\Taskronome.Core.Tests\Taskronome.Core.Tests.csproj", "{EC754E31-3D19-4FBD-94C4-8D438FD64845}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Taskronome.ScenarioRunner", "tests\Taskronome.ScenarioRunner\Taskronome.ScenarioRunner.csproj", "{58E4543C-D5AE-4861-8789-C9A189EDB0F7}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8C24F7A8-78E2-4E11-B8E0-986951679E5E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8C24F7A8-78E2-4E11-B8E0-986951679E5E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8C24F7A8-78E2-4E11-B8E0-986951679E5E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8C24F7A8-78E2-4E11-B8E0-986951679E5E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{480F5B20-908C-4D15-B85A-147972361105}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{480F5B20-908C-4D15-B85A-147972361105}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{480F5B20-908C-4D15-B85A-147972361105}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{480F5B20-908C-4D15-B85A-147972361105}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EC754E31-3D19-4FBD-94C4-8D438FD64845}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EC754E31-3D19-4FBD-94C4-8D438FD64845}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EC754E31-3D19-4FBD-94C4-8D438FD64845}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EC754E31-3D19-4FBD-94C4-8D438FD64845}.Release|Any CPU.Build.0 = Release|Any CPU
+		{58E4543C-D5AE-4861-8789-C9A189EDB0F7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{58E4543C-D5AE-4861-8789-C9A189EDB0F7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{58E4543C-D5AE-4861-8789-C9A189EDB0F7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{58E4543C-D5AE-4861-8789-C9A189EDB0F7}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

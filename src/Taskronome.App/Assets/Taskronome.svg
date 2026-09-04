@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Taskronome logo">
+  <rect x="48" y="48" width="928" height="928" rx="220" fill="#4057D6"/>
+  <g fill="none" stroke="#fff" stroke-width="62" stroke-linecap="round">
+    <path d="M289 696a318 318 0 0 1-58-255"/>
+    <path opacity=".82" d="M441 231a318 318 0 0 1 352 150"/>
+    <path opacity=".67" d="M793 643a318 318 0 0 1-193 157"/>
+    <path stroke-width="54" d="M512 512V300M512 512l168 98"/>
+  </g>
+  <circle cx="512" cy="512" r="42" fill="#fff"/>
+  <circle cx="756" cy="756" r="106" fill="#172033" fill-opacity=".9"/>
+  <path d="m701 758 49 49 71-93" fill="none" stroke="#fff" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
