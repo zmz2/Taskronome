@@ -106,6 +106,14 @@ public sealed class NotificationService : INotificationService
 
         try
         {
+            var setting = AppNotificationManager.Default.Setting;
+            if (setting != AppNotificationSetting.Enabled)
+            {
+                LastError = $"Windows App SDK notification setting is {setting}.";
+                _logger.Warning($"Windows app notification unavailable ({setting}); in-app and tray fallbacks remain active.");
+                return false;
+            }
+
             var notification = new AppNotificationBuilder()
                 .AddArgument("action", "activate")
                 .AddArgument("kind", kind)

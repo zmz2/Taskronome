@@ -24,4 +24,14 @@
     <ProjectReference Include="..\Taskronome.Core\Taskronome.Core.csproj" />
     <PackageReference Include="Microsoft.WindowsAppSDK" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Microsoft.WindowsAppSDK 2.4.0 omits this satellite from the Foundation
+         component even though the self-contained native runtime loads it. Keep
+         the matching, audited x64 file beside the app so unpackaged notifications
+         work on a clean machine and in the portable package. -->
+    <Content Include="Runtime\Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+             Link="Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="Always" />
+  </ItemGroup>
 </Project>

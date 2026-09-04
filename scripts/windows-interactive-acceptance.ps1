@@ -30,8 +30,9 @@ param(
     This is an acceptance-only harness. It launches the supplied executable with
     an isolated --data-dir, drives the WPF controls through System.Windows.Automation,
     and records UI, data, process, window, screenshot, and log evidence. It does
-    not enable --test-mode, --notification-dry-run, or any production diagnostic
-    endpoint. The PowerShell process is the watchdog for the optional interruption
+    not enable --test-mode or --notification-dry-run. It uses only the explicit,
+    read-only --acceptance-read-only endpoint to collect AppNotificationManager
+    API evidence from inside the application process. The PowerShell process is the watchdog for the optional interruption
     checks; every thread suspension is paired with a finally-based resume.
 
     The harness is intentionally conservative around operations that can affect a
@@ -70,6 +71,8 @@ $script:logDir = Join-Path $script:root 'logs'
 $script:dataSnapshotDir = Join-Path $script:root 'data-snapshots'
 $script:exportDir = Join-Path $script:root 'exports'
 $script:evidenceDir = Join-Path $script:root 'evidence'
+$script:notificationApiProbePath = Join-Path $script:evidenceDir 'app-notification-api.json'
+$script:notificationApiToken = [Guid]::NewGuid().ToString('D')
 $script:results = [System.Collections.Generic.List[object]]::new()
 $script:process = $null
 $script:window = $null
@@ -77,7 +80,11 @@ $script:originalEnvironment = $null
 $script:networkBefore = @()
 $script:networkAfter = @()
 $script:applicationStartedAtUtc = $null
-$script:applicationArguments = @('--data-dir', $script:dataDir)
+$quotedDataDir = '"' + $script:dataDir.Replace('"', '\"') + '"'
+$quotedNotificationProbePath = '"' + $script:notificationApiProbePath.Replace('"', '\"') + '"'
+$script:applicationArguments = @(
+    '--data-dir', $quotedDataDir,
+    '--acceptance-read-only', $script:notificationApiToken, $quotedNotificationProbePath)
 
 foreach ($directory in @(
         $script:root,
@@ -100,6 +107,7 @@ if (-not ('TaskronomeAcceptanceNative' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -129,6 +137,30 @@ public static class TaskronomeAcceptanceNative
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    public static IntPtr[] GetTopLevelWindowHandles(int processId)
+    {
+        var handles = new List<IntPtr>();
+        EnumWindows((hWnd, _) =>
+        {
+            GetWindowThreadProcessId(hWnd, out var ownerProcessId);
+            if (ownerProcessId == processId)
+            {
+                handles.Add(hWnd);
+            }
+
+            return true;
+        }, IntPtr.Zero);
+        return handles.ToArray();
+    }
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint flags);
@@ -219,11 +251,35 @@ public static class TaskronomeAcceptanceNative
         keybd_event(key, 0, 2, UIntPtr.Zero);
     }
 
+    public static void SendCtrlKey(byte key)
+    {
+        keybd_event(0x11, 0, 0, UIntPtr.Zero);
+        keybd_event(key, 0, 0, UIntPtr.Zero);
+        keybd_event(key, 0, 2, UIntPtr.Zero);
+        keybd_event(0x11, 0, 2, UIntPtr.Zero);
+    }
+
     [DllImport("user32.dll")]
     private static extern bool SetCursorPos(int x, int y);
 
     [DllImport("user32.dll")]
     private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+
+    [DllImport("user32.dll")]
+    private static extern bool ScreenToClient(IntPtr hWnd, ref Point point);
+
+    [DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
+
+    private static IntPtr MakeLParam(int x, int y) => new((y << 16) | (x & 0xffff));
+
+    public static bool ClickNativeButton(IntPtr hWnd)
+    {
+        return hWnd != IntPtr.Zero && SendMessage(hWnd, 0x00F5, IntPtr.Zero, IntPtr.Zero) == IntPtr.Zero;
+    }
 
     public static void DoubleClickAt(int x, int y)
     {
@@ -233,6 +289,25 @@ public static class TaskronomeAcceptanceNative
         Thread.Sleep(60);
         mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
         mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+    }
+
+    public static bool DoubleClickWindow(IntPtr hWnd, int screenX, int screenY)
+    {
+        var point = new Point(screenX, screenY);
+        if (!ScreenToClient(hWnd, ref point))
+        {
+            return false;
+        }
+
+        var lParam = MakeLParam(point.X, point.Y);
+        var first = PostMessage(hWnd, 0x0200, IntPtr.Zero, lParam)
+            && PostMessage(hWnd, 0x0201, new IntPtr(1), lParam)
+            && PostMessage(hWnd, 0x0202, IntPtr.Zero, lParam);
+        Thread.Sleep(60);
+        var second = PostMessage(hWnd, 0x0200, IntPtr.Zero, lParam)
+            && PostMessage(hWnd, 0x0203, new IntPtr(1), lParam)
+            && PostMessage(hWnd, 0x0202, IntPtr.Zero, lParam);
+        return first && second;
     }
 
     public static void RightClickAt(int x, int y)
@@ -309,6 +384,13 @@ function Get-RelativePath {
     return ([IO.Path]::GetRelativePath($script:root, $Path)).Replace([IO.Path]::DirectorySeparatorChar, '/')
 }
 
+function ConvertTo-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    return [Convert]::ToHexString(
+        [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Value))).ToLowerInvariant()
+}
+
 function Redact-Identity {
     param([AllowNull()][string]$Value)
 
@@ -375,71 +457,109 @@ function Read-DataSnapshot {
         CheckpointReason = $null
     }
 
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    $lastError = $null
+    for ($attempt = 0; $attempt -lt 40; $attempt++) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            Start-Sleep -Milliseconds 50
+            continue
+        }
+
+        try {
+            $document = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            $checkpoint = $document.Checkpoint
+            $segments = if ($null -eq $document.WorkSegments) { @() } else { @($document.WorkSegments) }
+            $tasks = if ($null -eq $document.Tasks) { @() } else { @($document.Tasks) }
+            $recorded = [TimeSpan]::Zero
+            foreach ($segment in $segments) {
+                $recorded += Get-DurationFromJson $segment.Duration
+            }
+
+            $currentTask = $null
+            if ($null -ne $checkpoint -and $null -ne $checkpoint.CurrentTaskId) {
+                $currentTask = $tasks | Where-Object { [string]$_.Id -eq [string]$checkpoint.CurrentTaskId } | Select-Object -First 1
+            }
+
+            return [pscustomobject][ordered]@{
+                State = if ($null -eq $checkpoint) { 'Idle' } else { [string]$checkpoint.State }
+                CurrentTaskId = if ($null -eq $checkpoint) { $null } else { [string]$checkpoint.CurrentTaskId }
+                CurrentTaskName = if ($null -eq $currentTask) { '' } else { [string]$currentTask.Name }
+                Remaining = if ($null -eq $checkpoint) { [TimeSpan]::Zero } else { Get-DurationFromJson $checkpoint.Remaining }
+                CurrentRunAccumulated = if ($null -eq $checkpoint) { [TimeSpan]::Zero } else { Get-DurationFromJson $checkpoint.CurrentRunAccumulated }
+                WorkSegmentCount = @($segments).Count
+                RecordedDuration = $recorded
+                EventCount = if ($null -eq $document.Events) { 0 } else { @($document.Events).Count }
+                Tasks = $tasks
+                CheckpointSavedAtUtc = if ($null -eq $checkpoint) { $null } else { [string]$checkpoint.SavedAtUtc }
+                CheckpointReason = if ($null -eq $checkpoint) { $null } else { [string]$checkpoint.SystemPauseReason }
+            }
+        }
+        catch {
+            $lastError = $_.Exception.Message
+            Start-Sleep -Milliseconds 50
+        }
+    }
+
+    if ($null -eq $lastError) {
         return [pscustomobject]$empty
     }
 
-    try {
-        $document = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
-        $checkpoint = $document.Checkpoint
-        $segments = if ($null -eq $document.WorkSegments) { @() } else { @($document.WorkSegments) }
-        $tasks = if ($null -eq $document.Tasks) { @() } else { @($document.Tasks) }
-        $recorded = [TimeSpan]::Zero
-        foreach ($segment in $segments) {
-            $recorded += Get-DurationFromJson $segment.Duration
-        }
-
-        $currentTask = $null
-        if ($null -ne $checkpoint -and $null -ne $checkpoint.CurrentTaskId) {
-            $currentTask = $tasks | Where-Object { [string]$_.Id -eq [string]$checkpoint.CurrentTaskId } | Select-Object -First 1
-        }
-
-        return [pscustomobject][ordered]@{
-            State = if ($null -eq $checkpoint) { 'Idle' } else { [string]$checkpoint.State }
-            CurrentTaskId = if ($null -eq $checkpoint) { $null } else { [string]$checkpoint.CurrentTaskId }
-            CurrentTaskName = if ($null -eq $currentTask) { '' } else { [string]$currentTask.Name }
-            Remaining = if ($null -eq $checkpoint) { [TimeSpan]::Zero } else { Get-DurationFromJson $checkpoint.Remaining }
-            CurrentRunAccumulated = if ($null -eq $checkpoint) { [TimeSpan]::Zero } else { Get-DurationFromJson $checkpoint.CurrentRunAccumulated }
-            WorkSegmentCount = $segments.Count
-            RecordedDuration = $recorded
-            EventCount = if ($null -eq $document.Events) { 0 } else { @($document.Events).Count }
-            Tasks = $tasks
-            CheckpointSavedAtUtc = if ($null -eq $checkpoint) { $null } else { [string]$checkpoint.SavedAtUtc }
-            CheckpointReason = if ($null -eq $checkpoint) { $null } else { [string]$checkpoint.SystemPauseReason }
-        }
-    }
-    catch {
-        return [pscustomobject][ordered]@{
-            State = 'CorruptOrUnavailable'
-            CurrentTaskId = $null
-            CurrentTaskName = ''
-            Remaining = [TimeSpan]::Zero
-            CurrentRunAccumulated = [TimeSpan]::Zero
-            WorkSegmentCount = 0
-            RecordedDuration = [TimeSpan]::Zero
-            EventCount = 0
-            Tasks = @()
-            CheckpointSavedAtUtc = $null
-            CheckpointReason = $null
-            ReadError = $_.Exception.Message
-        }
+    return [pscustomobject][ordered]@{
+        State = 'CorruptOrUnavailable'
+        CurrentTaskId = $null
+        CurrentTaskName = ''
+        Remaining = [TimeSpan]::Zero
+        CurrentRunAccumulated = [TimeSpan]::Zero
+        WorkSegmentCount = 0
+        RecordedDuration = [TimeSpan]::Zero
+        EventCount = 0
+        Tasks = @()
+        CheckpointSavedAtUtc = $null
+        CheckpointReason = $null
+        ReadError = $lastError
     }
 }
 
 function Get-ElementText {
     param([Parameter(Mandatory = $true)][System.Windows.Automation.AutomationElement]$Element)
 
+    $value = ''
     try {
         try {
             $valuePattern = $Element.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-            return ([System.Windows.Automation.ValuePattern]$valuePattern).Current.Value
+            $value = ([System.Windows.Automation.ValuePattern]$valuePattern).Current.Value
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                return $value
+            }
         }
-        catch [System.Windows.Automation.PatternNotSupportedException] {
-            return $Element.Current.Name
+        catch {
         }
+
+        $name = [string]$Element.Current.Name
+        if (-not [string]::IsNullOrWhiteSpace($name)) {
+            return $name
+        }
+
+        return $value
     }
     catch {
         return ''
+    }
+}
+
+function Get-ElementValue {
+    param([Parameter(Mandatory = $true)][System.Windows.Automation.AutomationElement]$Element)
+
+    try {
+        $valuePattern = $Element.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        $value = ([System.Windows.Automation.ValuePattern]$valuePattern).Current.Value
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            return $value
+        }
+
+        return [string]$Element.Current.Name
+    }
+    catch {
+        return $Element.Current.Name
     }
 }
 
@@ -542,6 +662,31 @@ function Get-UiSnapshot {
     }
 }
 
+function Get-LiveMainWindowElement {
+    if ($null -eq $script:process) {
+        return $null
+    }
+
+    try {
+        $script:process.Refresh()
+        $handle = $script:process.MainWindowHandle
+        if ($handle -eq [IntPtr]::Zero) {
+            return $null
+        }
+
+        $candidate = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+        if ($candidate.Current.ProcessId -ne $script:process.Id) {
+            return $null
+        }
+
+        $script:window = $candidate
+        return $candidate
+    }
+    catch {
+        return $null
+    }
+}
+
 function Find-ElementById {
     param(
         [Parameter(Mandatory = $true)][string]$AutomationId,
@@ -552,11 +697,29 @@ function Find-ElementById {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
         try {
-            if ($null -ne $script:window) {
+            $liveWindow = Get-LiveMainWindowElement
+            if ($null -ne $liveWindow) {
                 $condition = [System.Windows.Automation.PropertyCondition]::new(
                     [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
                     $AutomationId)
-                $element = $script:window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+                $element = $liveWindow.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+                if ($null -ne $element) {
+                    return $element
+                }
+            }
+
+            if ($null -ne $script:process) {
+                $processCondition = [System.Windows.Automation.PropertyCondition]::new(
+                    [System.Windows.Automation.AutomationElement]::ProcessIdProperty,
+                    [int]$script:process.Id)
+                $globalCondition = [System.Windows.Automation.AndCondition]::new(
+                    [System.Windows.Automation.PropertyCondition]::new(
+                        [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+                        $AutomationId),
+                    $processCondition)
+                $element = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
+                    [System.Windows.Automation.TreeScope]::Descendants,
+                    $globalCondition)
                 if ($null -ne $element) {
                     return $element
                 }
@@ -585,9 +748,29 @@ function Find-ElementByIdAnyWindow {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
         try {
-            $condition = [System.Windows.Automation.PropertyCondition]::new(
+            $liveWindow = Get-LiveMainWindowElement
+            if ($null -ne $liveWindow) {
+                $idCondition = [System.Windows.Automation.PropertyCondition]::new(
+                    [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+                    $AutomationId)
+                $element = $liveWindow.FindFirst(
+                    [System.Windows.Automation.TreeScope]::Descendants,
+                    $idCondition)
+                if ($null -ne $element) {
+                    return $element
+                }
+            }
+
+            $idCondition = [System.Windows.Automation.PropertyCondition]::new(
                 [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
                 $AutomationId)
+            $condition = $idCondition
+            if ($null -ne $script:process) {
+                $processCondition = [System.Windows.Automation.PropertyCondition]::new(
+                    [System.Windows.Automation.AutomationElement]::ProcessIdProperty,
+                    [int]$script:process.Id)
+                $condition = [System.Windows.Automation.AndCondition]::new($idCondition, $processCondition)
+            }
             $element = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
                 [System.Windows.Automation.TreeScope]::Descendants,
                 $condition)
@@ -698,7 +881,7 @@ function Invoke-Element {
 function Invoke-ButtonById {
     param([Parameter(Mandatory = $true)][string]$AutomationId)
 
-    $element = Find-ElementById $AutomationId
+    $element = Find-ElementByIdAnyWindow $AutomationId
     Invoke-Element $element
     return $element
 }
@@ -727,7 +910,7 @@ function Select-Element {
         $pattern = $Element.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
         ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
     }
-    catch [System.Windows.Automation.PatternNotSupportedException] {
+    catch {
         Invoke-Element $Element
     }
 }
@@ -735,9 +918,28 @@ function Select-Element {
 function Select-Tab {
     param([Parameter(Mandatory = $true)][string]$AutomationId)
 
-    $tab = Find-ElementById $AutomationId
-    Select-Element $tab
-    Start-Sleep -Milliseconds 150
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        try {
+            $tab = Find-ElementByIdAnyWindow $AutomationId -TimeoutSeconds 1
+            $pattern = $tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+            if (-not ([System.Windows.Automation.SelectionItemPattern]$pattern).Current.IsSelected) {
+                ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
+            }
+
+            $selected = $tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+            if (([System.Windows.Automation.SelectionItemPattern]$selected).Current.IsSelected) {
+                Start-Sleep -Milliseconds 250
+                return
+            }
+        }
+        catch [System.Windows.Automation.ElementNotAvailableException] {
+        }
+
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "UI Automation tab did not become selected: $AutomationId"
 }
 
 function Get-TaskRows {
@@ -805,18 +1007,148 @@ function Get-ElementCenter {
 function Double-ClickElement {
     param([Parameter(Mandatory = $true)][System.Windows.Automation.AutomationElement]$Element)
 
-    $center = Get-ElementCenter $Element
+    if ($null -ne $script:window) {
+        $handle = [IntPtr]$script:window.Current.NativeWindowHandle
+        $script:window.SetFocus()
+        [TaskronomeAcceptanceNative]::SetForegroundWindow($handle) | Out-Null
+    }
+    else {
+        throw 'Cannot double-click because the main window is unavailable.'
+    }
+    for ($attempt = 0; $attempt -lt 2; $attempt++) {
+        $center = Get-ElementCenter $Element
+        if ($attempt -eq 0) {
+            [TaskronomeAcceptanceNative]::DoubleClickAt($center.X, $center.Y)
+        }
+        else {
+            Assert-True ([TaskronomeAcceptanceNative]::DoubleClickWindow($handle, $center.X, $center.Y)) 'Posting the task-row double-click messages failed.'
+        }
+        $readyDeadline = [DateTime]::UtcNow.AddSeconds(2)
+        while ([DateTime]::UtcNow -lt $readyDeadline) {
+            if (@(Get-EditorWindows).Count -gt 0) {
+                return
+            }
+
+            Start-Sleep -Milliseconds 100
+        }
+
+        if ($attempt -eq 0) {
+            $script:window.SetFocus()
+            [TaskronomeAcceptanceNative]::SetForegroundWindow($handle) | Out-Null
+        }
+    }
+
+    throw 'Task editor window did not open after two posted double-click attempts.'
+}
+
+function Double-ClickButtonById {
+    param([Parameter(Mandatory = $true)][string]$AutomationId)
+
+    $button = $null
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        $button = Find-ElementById $AutomationId -TimeoutSeconds 1
+        if ($button.Current.IsEnabled) {
+            break
+        }
+
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if ($null -eq $button -or -not $button.Current.IsEnabled) {
+        throw "The UI element '$AutomationId' is disabled."
+    }
+
+    $handle = [IntPtr]$script:window.Current.NativeWindowHandle
+    $script:window.SetFocus()
+    [TaskronomeAcceptanceNative]::SetForegroundWindow($handle) | Out-Null
+    $center = Get-ElementCenter $button
     [TaskronomeAcceptanceNative]::DoubleClickAt($center.X, $center.Y)
 }
 
 function Wait-Editor {
-    return Find-ElementByIdAnyWindow 'TaskEditorWindow'
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        $editor = @(Get-EditorWindows) | Select-Object -First 1
+        if ($null -ne $editor) {
+            return $editor
+        }
+
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw 'Task editor window did not become ready before the timeout.'
+}
+
+function Get-EditorWindows {
+    if ($null -eq $script:process) {
+        return @()
+    }
+
+    try {
+        $result = [System.Collections.Generic.List[object]]::new()
+        foreach ($handle in [TaskronomeAcceptanceNative]::GetTopLevelWindowHandles($script:process.Id)) {
+            if ($handle -eq [IntPtr]::Zero -or -not [TaskronomeAcceptanceNative]::IsWindowVisible($handle)) {
+                continue
+            }
+
+            try {
+                $window = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+                if ([string]$window.Current.AutomationId -eq 'TaskEditorWindow') {
+                    [void]$result.Add($window)
+                }
+            }
+            catch [System.Windows.Automation.ElementNotAvailableException] {
+            }
+        }
+
+        return @($result)
+    }
+    catch {
+        return @()
+    }
+}
+
+function Wait-EditorClosed {
+    param([int]$TimeoutSeconds = 5)
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (@(Get-EditorWindows).Count -eq 0) {
+            return $true
+        }
+
+        Start-Sleep -Milliseconds 150
+    }
+
+    return $false
+}
+
+function Get-TextByIdEventually {
+    param(
+        [Parameter(Mandatory = $true)][string]$AutomationId,
+        [int]$TimeoutSeconds = 5
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $element = Find-ElementByIdAnyWindow $AutomationId -TimeoutSeconds 1 -Optional
+        if ($null -ne $element) {
+            $text = Get-ElementText $element
+            if (-not [string]::IsNullOrWhiteSpace($text)) {
+                return $text
+            }
+        }
+
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    return ''
 }
 
 function Set-EditorFields {
     param(
-        [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string]$Notes,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Name,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Notes,
         [Parameter(Mandatory = $true)][int]$Hours,
         [Parameter(Mandatory = $true)][int]$Minutes,
         [Parameter(Mandatory = $true)][int]$Seconds
@@ -842,18 +1174,24 @@ function Confirm-Dialog {
                     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
                     [System.Windows.Automation.ControlType]::Window))
             foreach ($dialog in $windows) {
+                if ($null -ne $script:process -and [int]$dialog.Current.ProcessId -ne $script:process.Id) {
+                    continue
+                }
+
                 if ($null -ne $script:window -and [string]$dialog.Current.AutomationId -eq 'MainWindow') {
                     continue
                 }
 
                 $buttons = $dialog.FindAll(
                     [System.Windows.Automation.TreeScope]::Descendants,
-                    [System.Windows.Automation.PropertyCondition]::new(
-                        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                        [System.Windows.Automation.ControlType]::Button))
+                    [System.Windows.Automation.Condition]::TrueCondition)
                 foreach ($button in $buttons) {
-                    if ($acceptedNames -contains [string]$button.Current.Name -and $button.Current.IsEnabled) {
-                        Invoke-Element $button
+                    $name = [string]$button.Current.Name
+                    $isButton = [string]$button.Current.ClassName -eq 'Button' -or
+                        $button.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button
+                    $isAccepted = @($acceptedNames | Where-Object { $name -like "$_*" }).Count -gt 0
+                    if ($isButton -and $isAccepted -and $button.Current.IsEnabled) {
+                        Invoke-DialogButton $button
                         return $true
                     }
                 }
@@ -866,6 +1204,19 @@ function Confirm-Dialog {
     }
 
     return $false
+}
+
+function Invoke-DialogButton {
+    param([Parameter(Mandatory = $true)][System.Windows.Automation.AutomationElement]$Element)
+
+    try {
+        Invoke-Element $Element
+    }
+    catch {
+        $handle = [IntPtr]$Element.Current.NativeWindowHandle
+        Assert-True ($handle -ne [IntPtr]::Zero) "Dialog button '$($Element.Current.Name)' had no native window handle."
+        Assert-True ([TaskronomeAcceptanceNative]::ClickNativeButton($handle)) "Native click failed for dialog button '$($Element.Current.Name)'."
+    }
 }
 
 function Dismiss-Dialogs {
@@ -881,18 +1232,25 @@ function Dismiss-Dialogs {
                     [System.Windows.Automation.ControlType]::Window))
             $dismissed = $false
             foreach ($dialog in $windows) {
+                if ($null -ne $script:process -and [int]$dialog.Current.ProcessId -ne $script:process.Id) {
+                    continue
+                }
+
                 if ($null -ne $script:window -and [string]$dialog.Current.AutomationId -eq 'MainWindow') {
                     continue
                 }
 
                 $buttons = $dialog.FindAll(
                     [System.Windows.Automation.TreeScope]::Descendants,
-                    [System.Windows.Automation.PropertyCondition]::new(
-                        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                        [System.Windows.Automation.ControlType]::Button))
+                    [System.Windows.Automation.Condition]::TrueCondition)
                 foreach ($button in $buttons) {
-                    if (@('否', '取消', 'No', 'Cancel', '关闭', 'Close', '确定', 'OK') -contains [string]$button.Current.Name -and $button.Current.IsEnabled) {
-                        Invoke-Element $button
+                    $name = [string]$button.Current.Name
+                    $isButton = [string]$button.Current.ClassName -eq 'Button' -or
+                        $button.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button
+                    $isDismissed = @(@('否', '取消', 'No', 'Cancel', '关闭', 'Close', '确定', 'OK') |
+                        Where-Object { $name -like "$_*" })
+                    if ($isButton -and $isDismissed.Count -gt 0 -and $button.Current.IsEnabled) {
+                        Invoke-DialogButton $button
                         $dismissed = $true
                         break
                     }
@@ -928,9 +1286,14 @@ function Add-TaskViaUi {
     [void](Wait-Editor)
     Set-EditorFields $Name $Notes $Hours $Minutes $Seconds
     Invoke-Element (Find-ElementByIdAnyWindow 'SaveTaskButton')
-    Start-Sleep -Milliseconds 300
-    if ($null -ne (Find-ElementByIdAnyWindow 'TaskEditorWindow' -TimeoutSeconds 1 -Optional)) {
-        throw "Task editor did not close after saving '$Name'."
+    if ($null -eq (Wait-ForTask $Name)) {
+        $validation = Get-ElementText (Find-ElementByIdAnyWindow 'ValidationTextBlock' -TimeoutSeconds 1 -Optional)
+        throw "Task '$Name' was not persisted after saving. Validation: $validation"
+    }
+
+    if (-not (Wait-EditorClosed)) {
+        $validation = Get-ElementText (Find-ElementByIdAnyWindow 'ValidationTextBlock' -TimeoutSeconds 1 -Optional)
+        throw "Task editor did not close after saving '$Name'. Validation: $validation"
     }
 }
 
@@ -945,7 +1308,32 @@ function Edit-TaskViaUi {
     [void](Wait-Editor)
     Set-ElementValue (Find-ElementByIdAnyWindow 'NotesTextBox') $NewNotes
     Invoke-Element (Find-ElementByIdAnyWindow 'SaveTaskButton')
-    Start-Sleep -Milliseconds 300
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $task = Get-TaskJson $TaskName
+        if ($null -ne $task -and [string]$task.Notes -eq $NewNotes) {
+            break
+        }
+
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    if (-not (Wait-EditorClosed)) {
+        $validation = Get-ElementText (Find-ElementByIdAnyWindow 'ValidationTextBlock' -TimeoutSeconds 1 -Optional)
+        throw "Task editor did not close after editing '$TaskName'. Validation: $validation"
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $task = Get-TaskJson $TaskName
+        if ($null -ne $task -and [string]$task.Notes -eq $NewNotes) {
+            return
+        }
+
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "Task '$TaskName' was not updated after the editor closed."
 }
 
 function Delete-TaskViaUi {
@@ -958,20 +1346,48 @@ function Delete-TaskViaUi {
     }
 
     Start-Sleep -Milliseconds 300
+    if (-not (Wait-ForTaskAbsent $TaskName)) {
+        throw "Task '$TaskName' remained in data.json after deletion."
+    }
 }
 
 function Stop-RotationViaUi {
-    $button = Find-ElementById 'StopButton'
-    if (-not $button.Current.IsEnabled) {
-        return
-    }
+    for ($attempt = 0; $attempt -lt 2; $attempt++) {
+        $button = Find-ElementById 'StopButton'
+        if (-not $button.Current.IsEnabled) {
+            return
+        }
 
-    Invoke-Element $button
-    if (-not (Confirm-Dialog)) {
-        throw 'The stop confirmation dialog was not available.'
-    }
+        Invoke-Element $button
+        if (Confirm-Dialog) {
+            try {
+                [void](Wait-AppState 'Idle' 10)
+                return
+            }
+            catch {
+                if ($attempt -eq 1) {
+                    throw
+                }
+            }
+        }
 
-    [void](Wait-AppState 'Idle' 10)
+        if ($attempt -eq 1) {
+            throw 'The stop confirmation dialog was not available.'
+        }
+
+        Start-Sleep -Milliseconds 600
+    }
+}
+
+function Stop-RotationSafely {
+    try {
+        $state = Read-DataSnapshot
+        if ($state.State -notin @('Idle', 'Completed', 'Unavailable', 'CorruptOrUnavailable')) {
+            Stop-RotationViaUi
+        }
+    }
+    catch {
+    }
 }
 
 function Get-TaskJson {
@@ -979,6 +1395,68 @@ function Get-TaskJson {
 
     $data = Read-DataSnapshot
     return $data.Tasks | Where-Object { [string]$_.Name -eq $TaskName } | Select-Object -First 1
+}
+
+function Read-DataDocument {
+    $path = Join-Path $script:dataDir 'data.json'
+    $lastException = $null
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        try {
+            return Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+        catch {
+            $lastException = $_.Exception
+            Start-Sleep -Milliseconds 50
+        }
+    }
+
+    throw $lastException
+}
+
+function Get-AppLogText {
+    $logPath = Join-Path $script:dataDir 'logs'
+    if (-not (Test-Path -LiteralPath $logPath -PathType Container)) {
+        return ''
+    }
+
+    return ((Get-ChildItem -LiteralPath $logPath -File | Sort-Object Name | Get-Content -Raw) -join [Environment]::NewLine)
+}
+
+function Wait-ForTask {
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskName,
+        [int]$TimeoutSeconds = 15
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $task = Get-TaskJson $TaskName
+        if ($null -ne $task) {
+            return $task
+        }
+
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    return $null
+}
+
+function Wait-ForTaskAbsent {
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskName,
+        [int]$TimeoutSeconds = 5
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if ($null -eq (Get-TaskJson $TaskName)) {
+            return $true
+        }
+
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    return $false
 }
 
 function Assert-True {
@@ -1015,7 +1493,7 @@ function Copy-EvidenceSnapshot {
         @(Get-ChildItem -LiteralPath $script:dataDir -Filter 'data*.corrupt*.json' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
         if (Test-Path -LiteralPath $source -PathType Leaf) {
             $target = Join-Path $script:dataSnapshotDir "$safeLabel-$([IO.Path]::GetFileName($source))"
-            Copy-Item -LiteralPath $source -Destination $target -Force
+            Copy-FileForEvidence $source $target
             [void]$paths.Add((Get-RelativePath $target))
         }
     }
@@ -1024,12 +1502,46 @@ function Copy-EvidenceSnapshot {
     if (Test-Path -LiteralPath $sourceLogDir -PathType Container) {
         foreach ($sourceLog in @(Get-ChildItem -LiteralPath $sourceLogDir -File)) {
             $targetLog = Join-Path $script:logDir "$safeLabel-$($sourceLog.Name)"
-            Copy-Item -LiteralPath $sourceLog.FullName -Destination $targetLog -Force
+            Copy-FileForEvidence $sourceLog.FullName $targetLog
             [void]$paths.Add((Get-RelativePath $targetLog))
         }
     }
 
     return @($paths)
+}
+
+function Copy-FileForEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+    $lastException = $null
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        $sourceStream = $null
+        $destinationStream = $null
+        try {
+            $sourceStream = [IO.File]::Open($Source, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+            $destinationStream = [IO.File]::Open($Destination, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            $sourceStream.CopyTo($destinationStream)
+            return
+        }
+        catch [IO.IOException] {
+            $lastException = $_.Exception
+            Start-Sleep -Milliseconds 100
+        }
+        finally {
+            if ($null -ne $destinationStream) {
+                $destinationStream.Dispose()
+            }
+            if ($null -ne $sourceStream) {
+                $sourceStream.Dispose()
+            }
+        }
+    }
+
+    throw $lastException
 }
 
 function Save-WindowScreenshot {
@@ -1100,7 +1612,62 @@ function Get-NetworkSnapshot {
 }
 
 function Get-AppNotificationState {
+    param([switch]$WaitForSuccess)
+
+    $expectedTokenHash = [Convert]::ToHexString(
+        [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes([string]$script:notificationApiToken))).ToLowerInvariant()
+    $probeDeadline = [DateTime]::UtcNow.AddSeconds($(if ($WaitForSuccess) { 600 } else { 3 }))
+    while ([DateTime]::UtcNow -lt $probeDeadline) {
+        if (Test-Path -LiteralPath $script:notificationApiProbePath -PathType Leaf) {
+            try {
+                $probe = Get-Content -LiteralPath $script:notificationApiProbePath -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ([string]$probe.Source -eq 'Taskronome application process' -and
+                    [bool]$probe.ReadOnly -and
+                    ((-not $WaitForSuccess) -or [bool]$probe.GetAllAsync.Succeeded)) {
+                    return [pscustomobject][ordered]@{
+                        Source = [string]$probe.Source
+                        ReadOnly = [bool]$probe.ReadOnly
+                        TokenMatched = ([string]$probe.TokenSha256 -eq $expectedTokenHash)
+                        Setting = [string]$probe.Setting
+                        IsSupported = $probe.IsSupported
+                        GetAllAsync = $probe.GetAllAsync
+                        Error = if ($probe.PSObject.Properties.Name -contains 'Error') { [string]$probe.Error } else { $null }
+                    }
+                }
+            }
+            catch {
+            }
+        }
+
+        Start-Sleep -Milliseconds 100
+    }
+
+    $applicationProcessAlive = $false
+    if ($null -ne $script:process) {
+        try {
+            $script:process.Refresh()
+            $applicationProcessAlive = -not $script:process.HasExited
+        }
+        catch [InvalidOperationException] {
+        }
+    }
+
+    if ($applicationProcessAlive) {
+        return [pscustomobject][ordered]@{
+            Source = 'application-process-probe-unavailable'
+            ReadOnly = $true
+            TokenMatched = $false
+            Setting = 'Unavailable'
+            IsSupported = $null
+            GetAllAsync = 'Unavailable'
+            Assembly = ''
+            Error = 'The in-process AppNotificationManager probe did not produce a successful record before the acceptance timeout.'
+        }
+    }
+
     $result = [ordered]@{
+        Source = 'external-reflection-fallback'
+        TokenMatched = $false
         Setting = 'Unavailable'
         GetAllAsync = 'Unavailable'
         Assembly = ''
@@ -1156,25 +1723,60 @@ function Get-AppNotificationState {
             $result.Setting = [string]$settingProperty.GetValue($default)
         }
 
-        $getAllMethod = $managerType.GetMethods([Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static -bor [Reflection.BindingFlags]::Instance) |
-            Where-Object { $_.Name -eq 'GetAllAsync' } |
-            Select-Object -First 1
-        if ($null -ne $getAllMethod) {
-            $target = if ($getAllMethod.IsStatic) { $null } else { $default }
-            $operation = $getAllMethod.Invoke($target, @())
-            $awaiter = $operation.GetType().GetMethod('GetAwaiter').Invoke($operation, @())
-            $notifications = $awaiter.GetType().GetMethod('GetResult').Invoke($awaiter, @())
-            $result.GetAllAsync = "returned-$(@($notifications).Count)"
-        }
-        else {
-            $result.GetAllAsync = 'method-unavailable'
-        }
+        $result.GetAllAsync = 'not-queried-outside-application-process'
     }
     catch {
         $result.Error = $_.Exception.Message
     }
 
     return [pscustomobject]$result
+}
+
+function Get-AppNotificationRecords {
+    param([Parameter(Mandatory = $true)][AllowNull()][object]$NotificationState)
+
+    if ($null -eq $NotificationState -or $null -eq $NotificationState.GetAllAsync) {
+        return @()
+    }
+
+    try {
+        if ($null -eq $NotificationState.GetAllAsync.Notifications) {
+            return @()
+        }
+
+        return @($NotificationState.GetAllAsync.Notifications)
+    }
+    catch {
+        return @()
+    }
+}
+
+function Wait-AppNotificationPayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$Title,
+        [Parameter(Mandatory = $true)][string]$BodyFragment,
+        [int]$TimeoutSeconds = 180
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $state = Get-AppNotificationState
+        if ([string]$state.Source -eq 'Taskronome application process' -and
+            [bool]$state.TokenMatched -and
+            $null -ne $state.GetAllAsync -and
+            [bool]$state.GetAllAsync.Succeeded) {
+            $matching = @(Get-AppNotificationRecords $state | Where-Object {
+                    [string]$_.Payload -like "*$Title*" -and [string]$_.Payload -like "*$BodyFragment*"
+                })
+            if ($matching.Count -gt 0) {
+                return $state
+            }
+        }
+
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "The in-process notification history did not expose title '$Title' and body fragment '$BodyFragment' before the timeout."
 }
 
 function Get-EnvironmentSnapshot {
@@ -1232,6 +1834,26 @@ function Get-EnvironmentSnapshot {
     }
 }
 
+function Assert-CoreLayout {
+    Select-Tab 'TasksTab'
+    foreach ($id in @('TaskGrid', 'NewTaskButton', 'StartRotationButton')) {
+        $element = Find-ElementById $id
+        $bounds = $element.Current.BoundingRectangle
+        Assert-True ($bounds.Width -gt 0 -and $bounds.Height -gt 0) "$id had no visible bounds."
+        Assert-True (-not [string]::IsNullOrWhiteSpace((Get-ElementText $element))) "$id had no accessible text."
+    }
+
+    Select-Tab 'RunningTab'
+    foreach ($id in @('CurrentTaskText', 'RemainingText', 'PauseResumeButton', 'SkipButton', 'CompleteButton', 'StopButton')) {
+        $element = Find-ElementById $id
+        $bounds = $element.Current.BoundingRectangle
+        Assert-True ($bounds.Width -gt 0 -and $bounds.Height -gt 0) "$id had no visible bounds."
+        Assert-True (-not [string]::IsNullOrWhiteSpace((Get-ElementText $element))) "$id had no accessible text."
+    }
+
+    Select-Tab 'TasksTab'
+}
+
 function Invoke-Recorded {
     param(
         [Parameter(Mandatory = $true)][string]$TestId,
@@ -1253,7 +1875,7 @@ function Invoke-Recorded {
 
     if (-not [string]::IsNullOrWhiteSpace($NaReason)) {
         $result = 'N/A'
-        $actual = 'Not executed because the recorded environment condition applies.'
+        $actual = 'N/A; recorded environment condition applies.'
     }
     else {
         try {
@@ -1266,6 +1888,7 @@ function Invoke-Recorded {
             $result = 'Fail'
             $exception = $_.Exception.ToString()
             $actual = if ([string]::IsNullOrWhiteSpace($exception)) { 'Action failed.' } else { $exception.Split([Environment]::NewLine)[0] }
+            Stop-RotationSafely
         }
     }
 
@@ -1341,8 +1964,7 @@ function Start-Taskronome {
     }
 
     $script:applicationStartedAtUtc = [DateTimeOffset]::UtcNow
-    $quotedDataDir = '"' + $script:dataDir.Replace('"', '\"') + '"'
-    $script:process = Start-Process -FilePath $resolvedAppPath -ArgumentList @('--data-dir', $quotedDataDir) -PassThru
+    $script:process = Start-Process -FilePath $resolvedAppPath -ArgumentList $script:applicationArguments -PassThru
     [void](Wait-AppWindow)
     [TaskronomeAcceptanceNative]::SetForegroundWindow([IntPtr]$script:window.Current.NativeWindowHandle) | Out-Null
 }
@@ -1373,7 +1995,10 @@ function Stop-Taskronome {
             }
         }
 
-        [void]$script:process.WaitForExit(10000)
+        if (-not $script:process.WaitForExit(3000)) {
+            Stop-Process -Id $script:process.Id -Force -ErrorAction Stop
+            [void]$script:process.WaitForExit(5000)
+        }
     }
     catch [InvalidOperationException] {
     }
@@ -1382,17 +2007,51 @@ function Stop-Taskronome {
     }
 }
 
+function Wait-WindowVisibility {
+    param(
+        [Parameter(Mandatory = $true)][bool]$Visible,
+        [int]$TimeoutSeconds = 5
+    )
+
+    if ($null -eq $script:window) {
+        return $false
+    }
+
+    $handle = [IntPtr]$script:window.Current.NativeWindowHandle
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if ([TaskronomeAcceptanceNative]::IsWindowVisible($handle) -eq $Visible) {
+            return $true
+        }
+
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    return $false
+}
+
+function Activate-AppWindow {
+    if ($null -eq $script:window) {
+        throw 'The Taskronome main window is not available for activation.'
+    }
+
+    $handle = [IntPtr]$script:window.Current.NativeWindowHandle
+    [TaskronomeAcceptanceNative]::SetForegroundWindow($handle) | Out-Null
+    $script:window.SetFocus()
+    Start-Sleep -Milliseconds 200
+}
+
 function Get-TextFromElementId {
     param([Parameter(Mandatory = $true)][string]$AutomationId)
 
-    $element = Find-ElementById $AutomationId
+    $element = Find-ElementByIdAnyWindow $AutomationId
     return Get-ElementText $element
 }
 
 function Get-ToggleState {
     param([Parameter(Mandatory = $true)][string]$AutomationId)
 
-    $element = Find-ElementById $AutomationId
+    $element = Find-ElementByIdAnyWindow $AutomationId
     $pattern = $element.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
     return ([System.Windows.Automation.TogglePattern]$pattern).Current.ToggleState.ToString()
 }
@@ -1400,45 +2059,44 @@ function Get-ToggleState {
 function Get-ButtonEnabled {
     param([Parameter(Mandatory = $true)][string]$AutomationId)
 
-    return [bool](Find-ElementById $AutomationId).Current.IsEnabled
+    return [bool](Find-ElementByIdAnyWindow $AutomationId).Current.IsEnabled
 }
 
 function Test-RequiredAutomationIds {
-    $mainIds = @(
-        'MainWindow',
-        'MainTabs',
-        'TasksTab',
-        'RunningTab',
-        'StatisticsTab',
-        'SettingsTab',
-        'TaskGrid',
-        'NewTaskButton',
-        'EditTaskButton',
-        'DeleteTaskButton',
-        'MoveUpButton',
-        'MoveDownButton',
-        'ToggleEnabledButton',
-        'ReopenTaskButton',
-        'ResetCompletionButton',
-        'StartRotationButton',
-        'CurrentTaskText',
-        'RemainingText',
-        'ConfirmationPanel',
-        'ConfirmationText',
-        'ConfirmTaskButton',
-        'PauseResumeButton',
-        'SkipButton',
-        'CompleteButton',
-        'StopButton',
-        'AbsentPausePanel',
-        'SystemPausePanel',
-        'AlwaysOnTopCheckBox',
-        'PlaySoundCheckBox',
-        'ShowNotificationCheckBox',
-        'MinimizeToTrayCheckBox',
-        'TestNotificationButton',
-        'StatisticsScopeComboBox',
-        'ExportCsvButton')
+    $tabIds = [ordered]@{
+        TasksTab = @(
+            'MainTabs',
+            'TasksTab',
+            'RunningTab',
+            'StatisticsTab',
+            'SettingsTab',
+            'TaskGrid',
+            'NewTaskButton',
+            'EditTaskButton',
+            'DeleteTaskButton',
+            'MoveUpButton',
+            'MoveDownButton',
+            'ToggleEnabledButton',
+            'ReopenTaskButton',
+            'ResetCompletionButton',
+            'StartRotationButton')
+        RunningTab = @(
+            'CurrentTaskText',
+            'RemainingText',
+            'PauseResumeButton',
+            'SkipButton',
+            'CompleteButton',
+            'StopButton')
+        StatisticsTab = @(
+            'StatisticsScopeComboBox',
+            'ExportCsvButton')
+        SettingsTab = @(
+            'AlwaysOnTopCheckBox',
+            'PlaySoundCheckBox',
+            'ShowNotificationCheckBox',
+            'MinimizeToTrayCheckBox',
+            'TestNotificationButton')
+    }
     $editorIds = @(
         'TaskEditorWindow',
         'NameTextBox',
@@ -1450,16 +2108,22 @@ function Test-RequiredAutomationIds {
         'SaveTaskButton',
         'CancelTaskButton')
 
-    Select-Tab 'TasksTab'
     $missing = [System.Collections.Generic.List[string]]::new()
-    foreach ($id in $mainIds) {
-        $element = if ($id -eq 'MainWindow') { $script:window } else { Find-ElementById $id -TimeoutSeconds 3 -Optional }
-        if ($null -eq $element) {
-            [void]$missing.Add($id)
+    if ($null -eq $script:window) {
+        [void]$missing.Add('MainWindow')
+    }
+
+    foreach ($tab in $tabIds.GetEnumerator()) {
+        Select-Tab $tab.Key
+        foreach ($id in $tab.Value) {
+            if ($null -eq (Find-ElementById $id -TimeoutSeconds 3 -Optional)) {
+                [void]$missing.Add($id)
+            }
         }
     }
 
     if ($missing.Count -eq 0) {
+        Select-Tab 'TasksTab'
         Invoke-ButtonById 'NewTaskButton' | Out-Null
         [void](Wait-Editor)
         foreach ($id in $editorIds) {
@@ -1473,10 +2137,22 @@ function Test-RequiredAutomationIds {
         if ($null -ne $cancelButton -and $cancelButton.Current.IsEnabled) {
             Invoke-Element $cancelButton
         }
+        if (-not (Wait-EditorClosed)) {
+            foreach ($editorWindow in @(Get-EditorWindows)) {
+                try {
+                    $windowPattern = $editorWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+                    ([System.Windows.Automation.WindowPattern]$windowPattern).Close()
+                }
+                catch {
+                }
+            }
+            Assert-True (Wait-EditorClosed) 'The AutomationId probe left a task editor open.'
+        }
     }
 
     Assert-Equal 0 $missing.Count 'Required AutomationId controls were missing.'
-    return "located-$($mainIds.Count + $editorIds.Count)-controls"
+    $tabControlCount = ($tabIds.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
+    return "located-$($tabControlCount + $editorIds.Count)-controls"
 }
 
 function Run-DataAndUiFlow {
@@ -1516,7 +2192,7 @@ function Run-DataAndUiFlow {
         Select-Tab 'TasksTab'
         $row = Select-Task $longName
         Double-ClickElement $row
-        [void](Wait-Editor)
+        [void](Find-ElementByIdAnyWindow 'TaskEditorWindow' -TimeoutSeconds 10)
         Invoke-Element (Find-ElementByIdAnyWindow 'CancelTaskButton')
         Start-Sleep -Milliseconds 200
     } -ScreenshotName '05-double-click-editor' | Out-Null
@@ -1533,15 +2209,23 @@ function Run-DataAndUiFlow {
         Invoke-Recorded -TestId $invalid.Id -Category 'Validation' -Expected $invalid.Expected -Action {
             Invoke-ButtonById 'NewTaskButton' | Out-Null
             [void](Wait-Editor)
-            Set-EditorFields $invalid.Name $invalid.Notes $invalid.Hours $invalid.Minutes $invalid.Seconds
-            Invoke-Element (Find-ElementByIdAnyWindow 'SaveTaskButton')
-            Start-Sleep -Milliseconds 150
-            $editor = Find-ElementByIdAnyWindow 'TaskEditorWindow' -TimeoutSeconds 2 -Optional
-            Assert-True ($null -ne $editor) 'Invalid task input unexpectedly closed the editor.'
-            $validation = Get-ElementText (Find-ElementByIdAnyWindow 'ValidationTextBlock')
-            Assert-True (-not [string]::IsNullOrWhiteSpace($validation)) 'ValidationTextBlock was empty for invalid input.'
-            Invoke-Element (Find-ElementByIdAnyWindow 'CancelTaskButton')
-            Start-Sleep -Milliseconds 150
+            try {
+                Set-EditorFields $invalid.Name $invalid.Notes $invalid.Hours $invalid.Minutes $invalid.Seconds
+                Invoke-Element (Find-ElementByIdAnyWindow 'SaveTaskButton')
+                Start-Sleep -Milliseconds 150
+                $editor = Find-ElementByIdAnyWindow 'TaskEditorWindow' -TimeoutSeconds 2 -Optional
+                Assert-True ($null -ne $editor) 'Invalid task input unexpectedly closed the editor.'
+                $validation = Get-TextByIdEventually 'ValidationTextBlock' 5
+                Assert-True (-not [string]::IsNullOrWhiteSpace($validation)) 'ValidationTextBlock was empty for invalid input.'
+                return $validation
+            }
+            finally {
+                $cancel = Find-ElementByIdAnyWindow 'CancelTaskButton' -TimeoutSeconds 1 -Optional
+                if ($null -ne $cancel -and $cancel.Current.IsEnabled) {
+                    Invoke-Element $cancel
+                }
+                [void](Wait-EditorClosed)
+            }
         } -SnapshotFiles | Out-Null
     }
 
@@ -1602,6 +2286,8 @@ function Run-RotationFlow {
         Assert-Equal 'AwaitingConfirmation' $state.State 'Start did not request confirmation.'
         $panel = Find-ElementById 'ConfirmationPanel'
         Assert-True (-not $panel.Current.IsOffscreen) 'Confirmation panel was not visible.'
+        $confirmationText = Find-ElementById 'ConfirmationText'
+        Assert-True (-not [string]::IsNullOrWhiteSpace((Get-ElementText $confirmationText))) 'Confirmation text control was not visible.'
         Assert-True (Get-ButtonEnabled 'ConfirmTaskButton') 'Confirm button was disabled while confirmation was required.'
     } -ScreenshotName '07-awaiting-confirmation' -SnapshotFiles | Out-Null
 
@@ -1617,28 +2303,35 @@ function Run-RotationFlow {
     } -SnapshotFiles | Out-Null
 
     Invoke-Recorded -TestId 'rotation-task-a-running' -Category 'Rotation' -Expected 'Confirm through the app button and record about two seconds of Task A.' -Action {
+        $before = Read-DataSnapshot
         Invoke-ButtonById 'ConfirmTaskButton' | Out-Null
-        try { Invoke-ButtonById 'ConfirmTaskButton' | Out-Null } catch { }
         [void](Wait-AppState 'Running' 5)
+        Select-Tab 'TasksTab'
         Assert-True (-not (Get-ButtonEnabled 'EditTaskButton')) 'Task editing remained enabled during rotation.'
+        Select-Tab 'RunningTab'
         Start-Sleep -Seconds 3
         [void](Wait-AppState 'AwaitingConfirmation' 5)
         $data = Read-DataSnapshot
         $segments = @($data.WorkSegmentCount)
+        $delta = $data.RecordedDuration - $before.RecordedDuration
         Assert-True ($data.WorkSegmentCount -ge 1) 'Task A did not create a work segment.'
-        Assert-True ($data.RecordedDuration.TotalSeconds -ge 1.25 -and $data.RecordedDuration.TotalSeconds -le 2.75) "Task A recorded duration was outside tolerance: $($data.RecordedDuration)."
+        Assert-Equal ($before.WorkSegmentCount + 1) $data.WorkSegmentCount 'Task A did not create exactly one work segment.'
+        Assert-True ($delta.TotalSeconds -ge 1.25 -and $delta.TotalSeconds -le 2.75) "Task A recorded duration delta was outside tolerance: $delta."
         Assert-True ($data.CurrentTaskName -eq $taskB) "The next confirmation was not for Task B; it was '$($data.CurrentTaskName)'."
-        return [pscustomobject]@{ SegmentCount = $segments; Recorded = $data.RecordedDuration.ToString() }
+        return [pscustomobject]@{ SegmentCount = $segments; Recorded = $delta.ToString() }
     } -ScreenshotName '08-task-a-complete' -SnapshotFiles | Out-Null
 
     Invoke-Recorded -TestId 'rotation-task-b-reconfirmation' -Category 'Rotation' -Expected 'Task B requires a new in-app confirmation and records about three seconds.' -Action {
+        $before = Read-DataSnapshot
         Assert-True (Get-ButtonEnabled 'ConfirmTaskButton') 'Task B confirmation button was not enabled.'
         Invoke-ButtonById 'ConfirmTaskButton' | Out-Null
         [void](Wait-AppState 'Running' 5)
         Start-Sleep -Seconds 4
         [void](Wait-AppState 'AwaitingConfirmation' 6)
         $data = Read-DataSnapshot
-        Assert-True ($data.RecordedDuration.TotalSeconds -ge 3.0 -and $data.RecordedDuration.TotalSeconds -le 6.0) "Task B recorded duration was outside cumulative tolerance: $($data.RecordedDuration)."
+        $delta = $data.RecordedDuration - $before.RecordedDuration
+        Assert-Equal ($before.WorkSegmentCount + 1) $data.WorkSegmentCount 'Task B did not create exactly one work segment.'
+        Assert-True ($delta.TotalSeconds -ge 2.25 -and $delta.TotalSeconds -le 4.25) "Task B recorded duration delta was outside tolerance: $delta."
     } -ScreenshotName '09-task-b-reconfirmation' -SnapshotFiles | Out-Null
 
     Invoke-Recorded -TestId 'rotation-single-task-natural-restart' -Category 'Rotation' -Expected 'A single enabled task naturally returns to a new confirmation instead of auto-running.' -Action {
@@ -1667,34 +2360,65 @@ function Run-RotationFlow {
         $current = (Read-DataSnapshot).CurrentTaskName
         Invoke-ButtonById 'ConfirmTaskButton' | Out-Null
         [void](Wait-AppState 'Running' 5)
+        Start-Sleep -Milliseconds 600
         try { Invoke-ButtonById 'SkipButton' | Out-Null } catch { }
-        Start-Sleep -Milliseconds 400
+        Start-Sleep -Milliseconds 600
         $task = Get-TaskJson $current
         Assert-Equal 'False' ([string]$task.Completed) 'Skipped task was marked completed.'
         Stop-RotationViaUi
     } -SnapshotFiles | Out-Null
 
-    Invoke-Recorded -TestId 'rotation-complete-early-real-duration' -Category 'Rotation' -Expected 'Early completion records only real running time and marks the task complete.' -Action {
+    $earlyTaskName = '提前完成验收任务'
+    Invoke-Recorded -TestId 'rotation-complete-early-real-duration' -Category 'Rotation' -Expected 'Early completion records only real running time and marks a dedicated task complete.' -Action {
+        Select-Tab 'TasksTab'
+        if ($null -eq (Get-TaskJson $earlyTaskName)) {
+            Add-TaskViaUi $earlyTaskName 'complete early' 0 0 5
+        }
+
+        foreach ($task in @(Read-DataSnapshot).Tasks) {
+            if ([string]$task.Name -ne $earlyTaskName -and [string]$task.Enabled -eq 'True') {
+                Select-Task ([string]$task.Name) | Out-Null
+                Invoke-ButtonById 'ToggleEnabledButton' | Out-Null
+            }
+        }
+
+        Select-Task $earlyTaskName | Out-Null
+        $earlyTask = Get-TaskJson $earlyTaskName
+        if ([string]$earlyTask.Completed -eq 'True') {
+            Invoke-ButtonById 'ResetCompletionButton' | Out-Null
+            Assert-True (Confirm-Dialog) 'The reset dialog for the reusable early-completion task was not available.'
+            Start-Sleep -Milliseconds 250
+        }
+        if ([string](Get-TaskJson $earlyTaskName).Enabled -eq 'False') {
+            Invoke-ButtonById 'ToggleEnabledButton' | Out-Null
+        }
+
         Invoke-ButtonById 'StartRotationButton' | Out-Null
         [void](Wait-AppState 'AwaitingConfirmation' 10)
         $current = (Read-DataSnapshot).CurrentTaskName
+        Assert-Equal $earlyTaskName $current 'The dedicated early-completion task was not selected.'
         Invoke-ButtonById 'ConfirmTaskButton' | Out-Null
         [void](Wait-AppState 'Running' 5)
         Start-Sleep -Milliseconds 700
         $before = Read-DataSnapshot
         Invoke-ButtonById 'CompleteButton' | Out-Null
-        Start-Sleep -Milliseconds 500
+        [void](Wait-AppState 'Completed' 5)
         $after = Read-DataSnapshot
-        $task = Get-TaskJson $current
+        $task = Get-TaskJson $earlyTaskName
+        $delta = $after.RecordedDuration - $before.RecordedDuration
         Assert-Equal 'True' ([string]$task.Completed) 'Early-completed task was not marked completed.'
-        Assert-True ($after.RecordedDuration -gt $before.RecordedDuration) 'Early completion did not record real work.'
-        Assert-True ($after.RecordedDuration.TotalSeconds -lt 2.0) 'Early completion appears to have recorded the full slice.'
-        Stop-RotationViaUi
+        Assert-True ($delta.TotalSeconds -ge 0.35 -and $delta.TotalSeconds -lt 2.0) "Early completion recorded an unexpected duration: $delta."
+        Assert-Equal ($before.WorkSegmentCount + 1) $after.WorkSegmentCount 'Early completion did not create exactly one work segment.'
+        $document = Get-Content -LiteralPath (Join-Path $script:dataDir 'data.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $lastEarlySegment = @($document.WorkSegments | Where-Object { [string]$_.TaskName -eq $earlyTaskName } | Select-Object -Last 1)
+        Assert-True ($lastEarlySegment.Count -eq 1) 'Early completion did not persist a segment for the dedicated task.'
+        Assert-Equal 'CompletedEarly' ([string]$lastEarlySegment[0].EndReason) 'Early completion was not persisted with the CompletedEarly end reason.'
     } -SnapshotFiles | Out-Null
 
     Invoke-Recorded -TestId 'completion-reopen-and-reset-history' -Category 'Persistence' -Expected 'Reopen/reset completion changes status but keeps historical segments.' -Action {
         $completedTask = (Read-DataSnapshot).Tasks | Where-Object { $_.Completed -eq $true } | Select-Object -First 1
         Assert-True ($null -ne $completedTask) 'No completed task was available for reopen/reset verification.'
+        Select-Tab 'TasksTab'
         Select-Task ([string]$completedTask.Name) | Out-Null
         $historyBefore = (Read-DataSnapshot).WorkSegmentCount
         Assert-True (Get-ButtonEnabled 'ReopenTaskButton') 'Reopen button was not enabled for a completed task.'
@@ -1707,25 +2431,143 @@ function Run-RotationFlow {
         $current = (Read-DataSnapshot).CurrentTaskName
         Invoke-ButtonById 'ConfirmTaskButton' | Out-Null
         [void](Wait-AppState 'Running' 5)
+        Start-Sleep -Milliseconds 600
         Invoke-ButtonById 'CompleteButton' | Out-Null
-        Start-Sleep -Milliseconds 400
-        Stop-RotationViaUi
+        [void](Wait-AppState 'Completed' 5)
+        Select-Tab 'TasksTab'
         Select-Task $current | Out-Null
         Invoke-ButtonById 'ResetCompletionButton' | Out-Null
         Assert-True (Confirm-Dialog) 'The reset-completion confirmation dialog was not available.'
         Start-Sleep -Milliseconds 250
         Assert-Equal 'False' ([string](Get-TaskJson $current).Completed) 'Reset completion did not clear completion.'
-        Assert-Equal $historyBefore ((Read-DataSnapshot).WorkSegmentCount - 1) 'Reset completion changed historical segment count unexpectedly.'
+        Assert-Equal ($historyBefore + 1) (Read-DataSnapshot).WorkSegmentCount 'Reset completion changed historical segment count unexpectedly.'
+    } -SnapshotFiles | Out-Null
+
+    Invoke-Recorded -TestId 'rotation-rapid-controls-no-duplicate' -Category 'Rotation/Idempotency' -Expected 'Rapid double-click confirmation, pause, skip, complete, and stop controls produce only valid state transitions and accounting.' -Action {
+        $rapidTaskName = '快速控件验收任务'
+        $rapidStopTaskName = '快速停止验收任务'
+        Select-Tab 'TasksTab'
+        if ($null -eq (Get-TaskJson $rapidTaskName)) {
+            Add-TaskViaUi $rapidTaskName 'rapid control idempotency' 0 0 8
+        }
+        if ($null -eq (Get-TaskJson $rapidStopTaskName)) {
+            Add-TaskViaUi $rapidStopTaskName 'rapid stop idempotency' 0 2 0
+        }
+
+        foreach ($task in @(Read-DataSnapshot).Tasks) {
+            if ([string]$task.Name -ne $rapidTaskName -and [string]$task.Enabled -eq 'True') {
+                Select-Task ([string]$task.Name) | Out-Null
+                Invoke-ButtonById 'ToggleEnabledButton' | Out-Null
+            }
+        }
+
+        Select-Task $rapidTaskName | Out-Null
+        $rapidTask = Get-TaskJson $rapidTaskName
+        if ([string]$rapidTask.Completed -eq 'True') {
+            Invoke-ButtonById 'ResetCompletionButton' | Out-Null
+            Assert-True (Confirm-Dialog) 'The rapid-control reset dialog was not available.'
+            Start-Sleep -Milliseconds 250
+        }
+        if ([string](Get-TaskJson $rapidTaskName).Enabled -eq 'False') {
+            Invoke-ButtonById 'ToggleEnabledButton' | Out-Null
+        }
+
+        Invoke-ButtonById 'StartRotationButton' | Out-Null
+        [void](Wait-AppState 'AwaitingConfirmation' 10)
+        $confirmEventsBefore = @((Read-DataDocument).Events | Where-Object { [string]$_.Type -eq 'TaskConfirmed' }).Count
+        Double-ClickButtonById 'ConfirmTaskButton'
+        [void](Wait-AppState 'Running' 5)
+        Start-Sleep -Milliseconds 500
+        $confirmEventsAfter = @((Read-DataDocument).Events | Where-Object { [string]$_.Type -eq 'TaskConfirmed' }).Count
+        Assert-Equal ($confirmEventsBefore + 1) $confirmEventsAfter 'Rapid confirmation produced duplicate TaskConfirmed events.'
+        Start-Sleep -Milliseconds 600
+
+        $pauseEventsBefore = Read-DataDocument
+        Double-ClickButtonById 'PauseResumeButton'
+        [void](Wait-AppState 'PausedManual' 5)
+        $pauseEventsAfter = Read-DataDocument
+        Assert-Equal ((@($pauseEventsBefore.Events | Where-Object { [string]$_.Type -eq 'ManualPaused' }).Count) + 1) (@($pauseEventsAfter.Events | Where-Object { [string]$_.Type -eq 'ManualPaused' }).Count) 'Rapid pause did not create exactly one ManualPaused event.'
+        Assert-Equal (@($pauseEventsBefore.Events | Where-Object { [string]$_.Type -eq 'ManualResumed' }).Count) (@($pauseEventsAfter.Events | Where-Object { [string]$_.Type -eq 'ManualResumed' }).Count) 'Rapid pause generated an unexpected second action.'
+        Start-Sleep -Milliseconds 600
+        Invoke-ButtonById 'PauseResumeButton' | Out-Null
+        [void](Wait-AppState 'Running' 5)
+        Start-Sleep -Milliseconds 600
+
+        $beforeSkip = Read-DataSnapshot
+        $skipEventsBefore = @((Read-DataDocument).Events | Where-Object { [string]$_.Type -eq 'SliceSkipped' }).Count
+        Double-ClickButtonById 'SkipButton'
+        [void](Wait-AppState 'AwaitingConfirmation' 5)
+        Start-Sleep -Milliseconds 600
+        $afterSkip = Read-DataSnapshot
+        $skipEventsAfter = @((Read-DataDocument).Events | Where-Object { [string]$_.Type -eq 'SliceSkipped' }).Count
+        $skipRecordedDelta = $afterSkip.RecordedDuration - $beforeSkip.RecordedDuration
+        Assert-Equal ($beforeSkip.WorkSegmentCount + 1) $afterSkip.WorkSegmentCount 'Rapid skip did not create exactly one real-running work segment.'
+        Assert-True ($skipRecordedDelta.TotalSeconds -ge 0.35 -and $skipRecordedDelta.TotalSeconds -le 1.5) "Rapid skip recorded duration was outside the real-running tolerance: $skipRecordedDelta."
+        Assert-Equal ($skipEventsBefore + 1) $skipEventsAfter 'Rapid skip produced duplicate SliceSkipped events.'
+        Assert-Equal 'False' ([string](Get-TaskJson $rapidTaskName).Completed) 'Rapid skip marked the task completed.'
+
+        Invoke-ButtonById 'ConfirmTaskButton' | Out-Null
+        [void](Wait-AppState 'Running' 5)
+        Start-Sleep -Milliseconds 600
+        $beforeComplete = Read-DataSnapshot
+        $completeEventsBefore = @((Read-DataDocument).Events | Where-Object { [string]$_.Type -eq 'TaskCompletedEarly' }).Count
+        Double-ClickButtonById 'CompleteButton'
+        [void](Wait-AppState 'Completed' 5)
+        Start-Sleep -Milliseconds 300
+        $afterComplete = Read-DataSnapshot
+        $completeEventsAfter = @((Read-DataDocument).Events | Where-Object { [string]$_.Type -eq 'TaskCompletedEarly' }).Count
+        Assert-Equal ($beforeComplete.WorkSegmentCount + 1) $afterComplete.WorkSegmentCount 'Rapid complete created duplicate work segments.'
+        Assert-Equal ($completeEventsBefore + 1) $completeEventsAfter 'Rapid complete produced duplicate completion events.'
+        Assert-Equal 'True' ([string](Get-TaskJson $rapidTaskName).Completed) 'Rapid complete did not mark the task completed.'
+
+        Select-Tab 'TasksTab'
+        Select-Task $rapidStopTaskName | Out-Null
+        if ([string](Get-TaskJson $rapidStopTaskName).Enabled -eq 'False') {
+            Invoke-ButtonById 'ToggleEnabledButton' | Out-Null
+        }
+        Invoke-ButtonById 'StartRotationButton' | Out-Null
+        [void](Wait-AppState 'AwaitingConfirmation' 10)
+        Invoke-ButtonById 'ConfirmTaskButton' | Out-Null
+        [void](Wait-AppState 'Running' 5)
+        Start-Sleep -Milliseconds 600
+        $stopEventsBefore = @((Read-DataDocument).Events | Where-Object { [string]$_.Type -eq 'RotationStopped' }).Count
+        Double-ClickButtonById 'StopButton'
+        Assert-True (Confirm-Dialog) 'The rapid-stop confirmation dialog was not available.'
+        [void](Wait-AppState 'Idle' 10)
+        $stopEventsAfter = @((Read-DataDocument).Events | Where-Object { [string]$_.Type -eq 'RotationStopped' }).Count
+        Assert-Equal ($stopEventsBefore + 1) $stopEventsAfter 'Rapid stop produced duplicate RotationStopped events.'
     } -SnapshotFiles | Out-Null
 
     Invoke-Recorded -TestId 'rotation-confirmation-timeout-production' -Category 'Production Confirmation' -Expected 'A real ten-second confirmation timeout pauses as PausedAbsent and freezes work.' -Action {
         Select-Tab 'TasksTab'
+        $timeoutTaskName = '确认超时验收任务'
+        if ($null -eq (Get-TaskJson $timeoutTaskName)) {
+            Add-TaskViaUi $timeoutTaskName 'production confirmation timeout' 0 2 0
+        }
+        foreach ($task in @(Read-DataSnapshot).Tasks) {
+            if ([string]$task.Name -ne $timeoutTaskName -and [string]$task.Enabled -eq 'True') {
+                Select-Task ([string]$task.Name) | Out-Null
+                Invoke-ButtonById 'ToggleEnabledButton' | Out-Null
+            }
+        }
+        Select-Task $timeoutTaskName | Out-Null
+        $timeoutTask = Get-TaskJson $timeoutTaskName
+        if ([string]$timeoutTask.Completed -eq 'True') {
+            Invoke-ButtonById 'ResetCompletionButton' | Out-Null
+            Assert-True (Confirm-Dialog) 'The timeout-task reset dialog was not available.'
+            Start-Sleep -Milliseconds 250
+        }
+        if ([string](Get-TaskJson $timeoutTaskName).Enabled -eq 'False') {
+            Invoke-ButtonById 'ToggleEnabledButton' | Out-Null
+        }
         Invoke-ButtonById 'StartRotationButton' | Out-Null
         [void](Wait-AppState 'AwaitingConfirmation' 10)
         $before = Read-DataSnapshot
         $beforeUi = Get-TextFromElementId 'RemainingText'
         Start-Sleep -Seconds 11
         [void](Wait-AppState 'PausedAbsent' 5)
+        $absentPanel = Find-ElementById 'AbsentPausePanel'
+        Assert-True (-not $absentPanel.Current.IsOffscreen) 'Absent-pause panel was not visible.'
         $timeout = Read-DataSnapshot
         Start-Sleep -Seconds 10
         $frozen = Read-DataSnapshot
@@ -1739,7 +2581,8 @@ function Run-RotationFlow {
         [void](Wait-AppState 'AwaitingConfirmation' 5)
         $recovery = Read-DataSnapshot
         Assert-True ((Find-ElementById 'ConfirmTaskButton').Current.IsEnabled) 'Recovery did not require a new confirmation.'
-        Assert-Equal '00:00:02' $recovery.Remaining.ToString() 'Recovery did not restore the complete Task A slice.'
+        Assert-Equal $before.Remaining $recovery.Remaining 'Recovery did not restore the complete task slice.'
+        Start-Sleep -Milliseconds 600
         Invoke-ButtonById 'ConfirmTaskButton' | Out-Null
         [void](Wait-AppState 'Running' 5)
         Stop-RotationViaUi
@@ -1749,18 +2592,28 @@ function Run-RotationFlow {
 }
 
 function Run-NotificationFlow {
-    $notificationApi = Get-AppNotificationState
-
     Invoke-Recorded -TestId 'notification-api-setting-and-history' -Category 'Notifications' -Expected 'Read AppNotificationManager setting and history without changing application state.' -Action {
+        $notificationApi = Get-AppNotificationState -WaitForSuccess
         Assert-True ($null -ne $notificationApi) 'Notification API evidence was not returned.'
+        Assert-Equal 'Taskronome application process' $notificationApi.Source 'Notification API evidence did not come from the application process.'
+        Assert-True $notificationApi.ReadOnly 'Notification API probe was not read-only.'
+        Assert-True $notificationApi.TokenMatched 'Notification API probe token did not match the acceptance-run token.'
+        Assert-True ($null -ne $notificationApi.IsSupported) 'AppNotificationManager.IsSupported() was not recorded.'
+        Assert-True ($null -ne $notificationApi.GetAllAsync -and $notificationApi.GetAllAsync.Succeeded) 'AppNotificationManager.GetAllAsync() did not succeed.'
         return $notificationApi
     } -ScreenshotName '11-notification-settings' -SnapshotFiles | Out-Null
 
     Invoke-Recorded -TestId 'notification-test-button-production' -Category 'Notifications' -Expected 'Test notification uses the real notification service in production mode and does not crash.' -Action {
+        $before = Get-AppNotificationState -WaitForSuccess
         Select-Tab 'SettingsTab'
         Invoke-ButtonById 'TestNotificationButton' | Out-Null
-        Start-Sleep -Seconds 2
+        Start-Sleep -Seconds 3
         Dismiss-Dialogs
+        $after = Wait-AppNotificationPayload 'Taskronome 测试通知' '系统通知通道工作正常' 180
+        $testNotifications = @(Get-AppNotificationRecords $after | Where-Object { [string]$_.Payload -match 'Taskronome.*测试通知|系统通知通道工作正常' })
+        $beforeCount = @(Get-AppNotificationRecords $before).Count
+        $afterCount = @(Get-AppNotificationRecords $after).Count
+        Assert-True ($testNotifications.Count -gt 0 -or $afterCount -gt $beforeCount) 'The production test notification was not recorded by GetAllAsync().'
         Select-Tab 'RunningTab'
         Assert-True ($null -ne $script:process -and -not $script:process.HasExited) 'Test notification caused the application to exit.'
     } -ScreenshotName '12-notification-test' -SnapshotFiles | Out-Null
@@ -1770,15 +2623,26 @@ function Run-NotificationFlow {
         Invoke-ButtonById 'StartRotationButton' | Out-Null
         [void](Wait-AppState 'AwaitingConfirmation' 10)
         $before = Read-DataSnapshot
+        Start-Sleep -Milliseconds 1000
+        $expectedTitle = "轮到：$($before.CurrentTaskName)"
+        $expectedBodyFragment = '10 秒'
+        $apiAfterRequest = Wait-AppNotificationPayload $expectedTitle $expectedBodyFragment 180
+        $matchingPayloads = @(Get-AppNotificationRecords $apiAfterRequest | Where-Object {
+                [string]$_.Payload -like "*$expectedTitle*" -and [string]$_.Payload -like "*$expectedBodyFragment*"
+            })
+        Assert-True ($matchingPayloads.Count -gt 0) 'GetAllAsync did not expose the task-turn notification title/body payload.'
         $notification = Find-GlobalElementByName "轮到：$($before.CurrentTaskName)" 5
+        $body = Find-GlobalElementByName '请在 10 秒内回到 Taskronome 并点击“开始任务”，否则轮转将暂停。' 2
         if ($null -eq $notification) {
             if (-not $OperatorAssistance) {
                 throw 'The real task-turn notification was not exposed to UI Automation; run with -OperatorAssistance for one operator click.'
             }
 
-            Read-Host '请在通知中心点击本次 Taskronome 任务通知一次；点击后按回车继续' | Out-Null
+            Read-Host '请确认通知标题和正文包含当前任务名及“10 秒”，再在通知中心点击本次 Taskronome 任务通知一次；完成后按回车继续' | Out-Null
         }
         else {
+            Assert-Equal $expectedTitle ([string]$notification.Current.Name) 'The notification title was not exposed as expected.'
+            Assert-True ($null -ne $body) 'The notification body was not exposed to UI Automation.'
             try {
                 Invoke-Element $notification
             }
@@ -1789,8 +2653,10 @@ function Run-NotificationFlow {
         }
 
         Start-Sleep -Seconds 1
+        Assert-True ([TaskronomeAcceptanceNative]::IsWindowVisible([IntPtr]$script:window.Current.NativeWindowHandle)) 'Notification activation did not return to the main window.'
         $afterActivation = Read-DataSnapshot
         Assert-Equal 'AwaitingConfirmation' $afterActivation.State 'Notification activation confirmed the task unexpectedly.'
+        Assert-Equal $before.EventCount $afterActivation.EventCount 'Notification activation unexpectedly added an application event.'
         Assert-Equal $before.WorkSegmentCount $afterActivation.WorkSegmentCount 'Notification activation created a work segment.'
         Assert-Equal $before.RecordedDuration $afterActivation.RecordedDuration 'Notification activation recorded work.'
         Assert-True (Get-ButtonEnabled 'ConfirmTaskButton') 'In-app confirmation did not remain available after notification activation.'
@@ -1799,21 +2665,63 @@ function Run-NotificationFlow {
         Stop-RotationViaUi
     } -ScreenshotName '13-notification-activation-awaiting' -SnapshotFiles | Out-Null
 
-    Invoke-Recorded -TestId 'notification-app-setting-fallback' -Category 'Notifications/Fallback' -Expected 'When the app notification setting is disabled/unavailable, the app remains usable and in-app confirmation is still present.' -Action {
+    Invoke-Recorded -TestId 'notification-app-setting-fallback' -Category 'Notifications/Fallback' -Expected 'When Windows notification permission is disabled, the real task reminder falls back without crashing, keeps in-app confirmation, and the original permission is restored.' -Action {
+        if (-not $OperatorAssistance) {
+            throw 'Disabling and restoring Windows notification permission requires one operator action; rerun with -OperatorAssistance.'
+        }
+
+        $initialApi = Get-AppNotificationState -WaitForSuccess
+        Assert-Equal 'Enabled' ([string]$initialApi.Setting) 'The notification permission was not enabled before the fallback test.'
         Select-Tab 'SettingsTab'
-        $before = Get-ToggleState 'ShowNotificationCheckBox'
-        if ($before -eq 'Off') {
+        if ((Get-ToggleState 'ShowNotificationCheckBox') -eq 'Off') {
             Toggle-Element (Find-ElementById 'ShowNotificationCheckBox')
         }
-        Toggle-Element (Find-ElementById 'ShowNotificationCheckBox')
-        Invoke-ButtonById 'TestNotificationButton' | Out-Null
-        Start-Sleep -Seconds 1
+
+        $fallbackTaskName = '通知回退验收任务'
+        Select-Tab 'TasksTab'
+        if ($null -eq (Get-TaskJson $fallbackTaskName)) {
+            Add-TaskViaUi $fallbackTaskName 'notification fallback' 0 2 0
+        }
+        foreach ($task in @(Read-DataSnapshot).Tasks) {
+            if ([string]$task.Name -ne $fallbackTaskName -and [string]$task.Enabled -eq 'True') {
+                Select-Task ([string]$task.Name) | Out-Null
+                Invoke-ButtonById 'ToggleEnabledButton' | Out-Null
+            }
+        }
+        Select-Task $fallbackTaskName | Out-Null
+        if ([string](Get-TaskJson $fallbackTaskName).Enabled -eq 'False') {
+            Invoke-ButtonById 'ToggleEnabledButton' | Out-Null
+        }
+
+        Start-Process 'ms-settings:notifications' | Out-Null
+        Read-Host '请在 Windows 通知设置中关闭 Taskronome 的通知权限，回到 Taskronome 后按回车继续' | Out-Null
+        Activate-AppWindow
+        $disabledApi = Get-AppNotificationState -WaitForSuccess
+        Assert-True ([string]$disabledApi.Setting -ne 'Enabled') "Windows notification permission still reports Enabled after the operator disabled it: $($disabledApi.Setting)."
+
+        Invoke-ButtonById 'StartRotationButton' | Out-Null
+        $awaiting = Wait-AppState 'AwaitingConfirmation' 10
+        Assert-True ((Find-ElementById 'ConfirmationPanel').Current.IsOffscreen -eq $false) 'In-app confirmation was not visible during notification fallback.'
+        Assert-True (Get-ButtonEnabled 'ConfirmTaskButton') 'In-app confirmation was not available during notification fallback.'
+        Start-Sleep -Seconds 2
         Dismiss-Dialogs
         Assert-True ($null -ne $script:process -and -not $script:process.HasExited) 'Notification fallback crashed the app.'
-        if ($before -eq 'On') {
-            Toggle-Element (Find-ElementById 'ShowNotificationCheckBox')
+        $fallbackLog = Get-AppLogText
+        Assert-True ($fallbackLog -match 'Sending a Windows app notification failed|notification.*failed|回退') 'Notification fallback did not record the expected failure/fallback evidence.'
+        $fallbackUi = Find-GlobalElementByName "轮到：$fallbackTaskName" 2
+        if ($null -eq $fallbackUi) {
+            Read-Host '请确认托盘气泡、系统声音、任务栏闪烁或明确的通知失败提示已出现；确认后按回车继续' | Out-Null
         }
-        Select-Tab 'TasksTab'
+
+        Invoke-ButtonById 'ConfirmTaskButton' | Out-Null
+        [void](Wait-AppState 'Running' 5)
+        Stop-RotationViaUi
+
+        Start-Process 'ms-settings:notifications' | Out-Null
+        Read-Host '请在 Windows 通知设置中恢复 Taskronome 的原始通知权限，回到 Taskronome 后按回车继续' | Out-Null
+        Activate-AppWindow
+        $restoredApi = Get-AppNotificationState -WaitForSuccess
+        Assert-Equal ([string]$initialApi.Setting) ([string]$restoredApi.Setting) 'The original Windows notification permission was not restored.'
     } -ScreenshotName '14-notification-fallback' -SnapshotFiles | Out-Null
 
     return $true
@@ -1847,12 +2755,58 @@ function Run-KeyboardTopmostAndSingleInstanceFlow {
         [void](Wait-AppState 'Running' 5)
         $confirmed = Read-DataSnapshot
         Assert-True ($confirmed.EventCount -gt $before.EventCount) 'Enter did not confirm while awaiting.'
+        $beforeRunningEnter = Read-DataSnapshot
+        [TaskronomeAcceptanceNative]::SendKey(0x0D)
+        Start-Sleep -Milliseconds 300
+        $afterRunningEnter = Read-DataSnapshot
+        Assert-Equal 'Running' $afterRunningEnter.State 'Enter changed the state while the task was already running.'
+        Assert-Equal $beforeRunningEnter.EventCount $afterRunningEnter.EventCount 'Enter generated an event while confirmation was not available.'
         [TaskronomeAcceptanceNative]::SendKey(0x20)
         [void](Wait-AppState 'PausedManual' 5)
         [TaskronomeAcceptanceNative]::SendKey(0x20)
         [void](Wait-AppState 'Running' 5)
         Stop-RotationViaUi
     } -SnapshotFiles | Out-Null
+
+    Invoke-Recorded -TestId 'keyboard-ctrl-n-and-tab-focus' -Category 'Window/Keyboard' -Expected 'Ctrl+N opens an editor only when editing is allowed, and Tab navigation exposes visible focus.' -Action {
+        Select-Tab 'TasksTab'
+        $script:window.SetFocus()
+        $mainHandle = [IntPtr]$script:window.Current.NativeWindowHandle
+        [TaskronomeAcceptanceNative]::SetForegroundWindow($mainHandle) | Out-Null
+        [TaskronomeAcceptanceNative]::SendCtrlKey(0x4E)
+        [void](Wait-Editor)
+        Assert-True ($null -ne (Find-ElementByIdAnyWindow 'NameTextBox')) 'Ctrl+N did not open the task editor while idle.'
+        Invoke-Element (Find-ElementByIdAnyWindow 'CancelTaskButton')
+        [void](Wait-EditorClosed)
+
+        $script:window.SetFocus()
+        [TaskronomeAcceptanceNative]::SetForegroundWindow($mainHandle) | Out-Null
+        [TaskronomeAcceptanceNative]::SendKey(0x09)
+        Start-Sleep -Milliseconds 200
+        $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+        Assert-True ($null -ne $focused) 'Tab navigation did not expose a focused element.'
+        Assert-Equal $script:process.Id $focused.Current.ProcessId 'Tab focus moved outside the Taskronome process.'
+        Assert-True $focused.Current.HasKeyboardFocus 'The focused element did not report keyboard focus.'
+        Assert-True ($focused.Current.BoundingRectangle.Width -gt 0 -and $focused.Current.BoundingRectangle.Height -gt 0) 'Tab focus had no visible bounds.'
+
+        Invoke-ButtonById 'StartRotationButton' | Out-Null
+        [void](Wait-AppState 'AwaitingConfirmation' 10)
+        $beforeAwaitingCtrlN = Read-DataSnapshot
+        $script:window.SetFocus()
+        [TaskronomeAcceptanceNative]::SetForegroundWindow($mainHandle) | Out-Null
+        [TaskronomeAcceptanceNative]::SendCtrlKey(0x4E)
+        Start-Sleep -Milliseconds 500
+        Assert-Equal 0 (@(Get-EditorWindows).Count) 'Ctrl+N opened an editor while confirmation was required.'
+        Assert-Equal 'AwaitingConfirmation' (Read-DataSnapshot).State 'Ctrl+N changed state while confirmation was required.'
+        Assert-Equal $beforeAwaitingCtrlN.EventCount (Read-DataSnapshot).EventCount 'Ctrl+N changed rotation events while confirmation was required.'
+
+        Invoke-ButtonById 'ConfirmTaskButton' | Out-Null
+        [void](Wait-AppState 'Running' 5)
+        [TaskronomeAcceptanceNative]::SendCtrlKey(0x4E)
+        Start-Sleep -Milliseconds 500
+        Assert-Equal 0 (@(Get-EditorWindows).Count) 'Ctrl+N opened an editor while the task was running.'
+        Stop-RotationViaUi
+    } -ScreenshotName '16-keyboard-focus-and-ctrl-n' -SnapshotFiles | Out-Null
 
     Invoke-Recorded -TestId 'keyboard-space-in-editor-does-not-pause' -Category 'Window/Keyboard' -Expected 'Space in a text box is not interpreted as a rotation shortcut.' -Action {
         Select-Tab 'TasksTab'
@@ -1868,7 +2822,7 @@ function Run-KeyboardTopmostAndSingleInstanceFlow {
 
     Invoke-Recorded -TestId 'single-instance-activates-first' -Category 'Single instance' -Expected 'A second production launch exits without a second tray/process and activates the first instance.' -Action {
         $beforeIds = @(Get-ProcessIdsForApp)
-        $second = Start-Process -FilePath $resolvedAppPath -ArgumentList @('--data-dir', ('"' + $script:dataDir.Replace('"', '\"') + '"')) -PassThru
+        $second = Start-Process -FilePath $resolvedAppPath -ArgumentList $script:applicationArguments -PassThru
         [void]$second.WaitForExit(10000)
         Start-Sleep -Seconds 1
         $afterIds = @(Get-ProcessIdsForApp)
@@ -1891,6 +2845,89 @@ function Find-TrayTaskronomeElement {
     return $null
 }
 
+function Find-TrayMenuItem {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Names,
+        [int]$TimeoutSeconds = 3
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        try {
+            $elements = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)
+            foreach ($element in $elements) {
+                try {
+                    $isMenuItem = $element.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem
+                    $name = [string]$element.Current.Name
+                    if ($isMenuItem -and @($Names | Where-Object { $name -eq $_ -or $name -like "*$_*" }).Count -gt 0) {
+                        return $element
+                    }
+                }
+                catch [System.Windows.Automation.ElementNotAvailableException] {
+                }
+            }
+        }
+        catch [System.Windows.Automation.ElementNotAvailableException] {
+        }
+
+        Start-Sleep -Milliseconds 100
+    }
+
+    return $null
+}
+
+function Invoke-TrayMenuAction {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Names,
+        [Parameter(Mandatory = $true)][string]$OperatorPrompt
+    )
+
+    $tray = Find-TrayTaskronomeElement
+    if ($null -ne $tray) {
+        $center = Get-ElementCenter $tray
+        [TaskronomeAcceptanceNative]::RightClickAt($center.X, $center.Y)
+        $item = Find-TrayMenuItem $Names 3
+        if ($null -ne $item) {
+            Invoke-Element $item
+            Start-Sleep -Milliseconds 300
+            return 'uia'
+        }
+    }
+
+    if (-not $OperatorAssistance) {
+        throw ("Tray menu item '{0}' was not exposed to UI Automation." -f ($Names -join '/'))
+    }
+
+    Read-Host $OperatorPrompt | Out-Null
+    return 'operator'
+}
+
+function Restore-MainWindowViaSingleInstance {
+    if (Wait-WindowVisibility $true 1) {
+        return $true
+    }
+
+    if ($null -eq $script:process) {
+        return $false
+    }
+
+    try {
+        $script:process.Refresh()
+        if ($script:process.HasExited) {
+            return $false
+        }
+
+        $second = Start-Process -FilePath $resolvedAppPath -ArgumentList $script:applicationArguments -PassThru
+        [void]$second.WaitForExit(10000)
+        return (Wait-WindowVisibility $true 5)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Run-TrayFlow {
     Invoke-Recorded -TestId 'close-to-tray-process-preserved' -Category 'Tray' -Expected 'Closing the main window hides it to the tray while the process remains alive.' -Action {
         Select-Tab 'SettingsTab'
@@ -1899,11 +2936,9 @@ function Run-TrayFlow {
         }
         $pattern = $script:window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
         ([System.Windows.Automation.WindowPattern]$pattern).Close()
-        Start-Sleep -Seconds 1
+        Assert-True (Wait-WindowVisibility $false 5) 'Close-to-tray did not hide the window before timeout.'
         $script:process.Refresh()
         Assert-True (-not $script:process.HasExited) 'Close-to-tray unexpectedly exited the process.'
-        $visible = [TaskronomeAcceptanceNative]::IsWindowVisible([IntPtr]$script:window.Current.NativeWindowHandle)
-        Assert-Equal 'False' ([string]$visible) 'Close-to-tray did not hide the window.'
     } -SnapshotFiles | Out-Null
 
     Invoke-Recorded -TestId 'tray-show-and-menu' -Category 'Tray' -Expected 'Tray double-click/show and menu actions restore the main window.' -Action {
@@ -1924,6 +2959,90 @@ function Run-TrayFlow {
         Assert-True ([TaskronomeAcceptanceNative]::IsWindowVisible([IntPtr]$script:window.Current.NativeWindowHandle)) 'Tray show did not restore the main window.'
         Select-Tab 'RunningTab'
     } -ScreenshotName '17-tray-restored' -SnapshotFiles | Out-Null
+
+    if (-not (Restore-MainWindowViaSingleInstance)) {
+        Stop-Taskronome -Force
+        Start-Taskronome
+    }
+
+    Invoke-Recorded -TestId 'tray-menu-actions' -Category 'Tray' -Expected 'Tray Show, Pause/Resume, Always-on-top, and Exit menu actions change real application state and save before exit.' -Action {
+        $trayTaskName = '托盘菜单验收任务'
+        Select-Tab 'TasksTab'
+        if ($null -eq (Get-TaskJson $trayTaskName)) {
+            Add-TaskViaUi $trayTaskName 'tray menu actions' 0 2 0
+        }
+
+        foreach ($task in @(Read-DataSnapshot).Tasks) {
+            if ([string]$task.Name -ne $trayTaskName -and [string]$task.Enabled -eq 'True') {
+                Select-Task ([string]$task.Name) | Out-Null
+                Invoke-ButtonById 'ToggleEnabledButton' | Out-Null
+            }
+        }
+
+        Select-Task $trayTaskName | Out-Null
+        if ([string](Get-TaskJson $trayTaskName).Enabled -eq 'False') {
+            Invoke-ButtonById 'ToggleEnabledButton' | Out-Null
+        }
+
+        Invoke-ButtonById 'StartRotationButton' | Out-Null
+        [void](Wait-AppState 'AwaitingConfirmation' 10)
+        Invoke-ButtonById 'ConfirmTaskButton' | Out-Null
+        [void](Wait-AppState 'Running' 5)
+        Start-Sleep -Milliseconds 700
+
+        $closePattern = $script:window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+        ([System.Windows.Automation.WindowPattern]$closePattern).Close()
+        Assert-True (Wait-WindowVisibility $false 5) 'The tray menu scenario did not hide the window.'
+        [void](Invoke-TrayMenuAction @('显示 Taskronome') '请右键 Taskronome 托盘图标并点击“显示 Taskronome”；窗口显示后按回车继续')
+        Assert-True (Wait-WindowVisibility $true 5) 'Tray Show menu did not restore the main window.'
+
+        $beforePause = Read-DataSnapshot
+        $closePattern = $script:window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+        ([System.Windows.Automation.WindowPattern]$closePattern).Close()
+        Assert-True (Wait-WindowVisibility $false 5) 'The window did not hide before the tray pause action.'
+        [void](Invoke-TrayMenuAction @('暂停') '请右键 Taskronome 托盘图标并点击“暂停”；完成后按回车继续')
+        $paused = Wait-AppState 'PausedManual' 5
+        Assert-Equal $beforePause.WorkSegmentCount $paused.WorkSegmentCount 'Tray pause created an unexpected duplicate segment.'
+
+        [void](Invoke-TrayMenuAction @('恢复') '请右键 Taskronome 托盘图标并点击“恢复”；完成后按回车继续')
+        [void](Wait-AppState 'Running' 5)
+
+        $topmostHandle = [IntPtr]$script:window.Current.NativeWindowHandle
+        $topmostBefore = [TaskronomeAcceptanceNative]::IsTopMost($topmostHandle)
+        $closePattern = $script:window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+        ([System.Windows.Automation.WindowPattern]$closePattern).Close()
+        Assert-True (Wait-WindowVisibility $false 5) 'The window did not hide before the tray topmost action.'
+        [void](Invoke-TrayMenuAction @('窗口始终置顶') '请右键 Taskronome 托盘图标并点击“窗口始终置顶”；完成后按回车继续')
+        Start-Sleep -Milliseconds 300
+        Assert-Equal (-not $topmostBefore) ([TaskronomeAcceptanceNative]::IsTopMost($topmostHandle)) 'Tray topmost menu did not toggle the window style.'
+        [void](Invoke-TrayMenuAction @('窗口始终置顶') '请再次右键 Taskronome 托盘图标并点击“窗口始终置顶”恢复原状态；完成后按回车继续')
+        Start-Sleep -Milliseconds 300
+        Assert-Equal $topmostBefore ([TaskronomeAcceptanceNative]::IsTopMost($topmostHandle)) 'Tray topmost menu did not restore the window style.'
+
+        [void](Invoke-TrayMenuAction @('显示 Taskronome') '请右键 Taskronome 托盘图标并点击“显示 Taskronome”；窗口显示后按回车继续')
+        Assert-True (Wait-WindowVisibility $true 5) 'Tray Show menu did not restore the window after topmost testing.'
+        Stop-RotationViaUi
+
+        $dataPath = Join-Path $script:dataDir 'data.json'
+        $backupPath = Join-Path $script:dataDir 'data.json.bak'
+        $closePattern = $script:window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+        ([System.Windows.Automation.WindowPattern]$closePattern).Close()
+        Assert-True (Wait-WindowVisibility $false 5) 'The window did not hide before the tray exit action.'
+        [void](Invoke-TrayMenuAction @('退出') '请右键 Taskronome 托盘图标并点击“退出”；确认程序退出后按回车继续')
+        $script:process.Refresh()
+        Assert-True ($script:process.HasExited -or @(Get-ProcessIdsForApp).Count -eq 0) 'Tray Exit did not terminate the only Taskronome process.'
+        Assert-True (Test-Path -LiteralPath $dataPath -PathType Leaf) 'Tray Exit did not leave data.json.'
+        Assert-True (Test-Path -LiteralPath $backupPath -PathType Leaf) 'Tray Exit did not leave data.json.bak after safe save.'
+        $script:window = $null
+        Start-Taskronome
+        [void](Wait-AppState 'Idle' 10)
+        Select-Tab 'TasksTab'
+    } -ScreenshotName '18-tray-menu-actions' -SnapshotFiles | Out-Null
+
+    if (-not (Restore-MainWindowViaSingleInstance)) {
+        Stop-Taskronome -Force
+        Start-Taskronome
+    }
 
     return $true
 }
@@ -1967,6 +3086,8 @@ function Run-InterruptionFlow {
         Start-Sleep -Seconds 15
         Start-Taskronome
         $recovered = Wait-AppState 'PausedSystem' 10
+        $systemPanel = Find-ElementById 'SystemPausePanel'
+        Assert-True (-not $systemPanel.Current.IsOffscreen) 'System-pause panel was not visible after restart.'
         Assert-Equal 'ApplicationRestart' $recovered.CheckpointReason 'Restart recovery did not identify ApplicationRestart.'
         Assert-Equal $beforeKill.WorkSegmentCount $recovered.WorkSegmentCount 'Offline process time changed segment count.'
         Assert-True ($recovered.Remaining -le $beforeKill.Remaining) 'Remaining moved backward after process restart.'
@@ -2020,14 +3141,14 @@ function Run-InterruptionFlow {
         Assert-Equal 'Lock' $after.CheckpointReason 'Lock recovery did not identify Lock.'
         Assert-True ($after.Remaining -le $before.Remaining) 'Lock time moved the remaining time backward.'
         Assert-Equal $before.WorkSegmentCount $after.WorkSegmentCount 'Lock time created a work segment.'
-        Assert-True (-not (Get-ButtonEnabled 'PauseResumeButton') -or $true) 'Pause/resume state could not be read after unlock.'
+        Assert-True (Get-ButtonEnabled 'PauseResumeButton') 'Pause/resume was not enabled after lock recovery.'
         Invoke-ButtonById 'PauseResumeButton' | Out-Null
         [void](Wait-AppState 'AwaitingConfirmation' 5)
         Stop-RotationViaUi
     } -ScreenshotName '20-lock-recovery' -SnapshotFiles | Out-Null
 
     $sleepCapability = @(powercfg /a 2>&1 | ForEach-Object { [string]$_ })
-    $sleepAvailable = $sleepCapability -match 'Standby|睡眠|Low Power Idle|S0'
+    $sleepAvailable = $sleepCapability -match 'Standby|待机|睡眠|休眠|Low Power Idle|Modern Standby|S3|S0'
     $sleepNaReason = if (-not $sleepAvailable) {
         "N/A: powercfg /a reported no supported sleep state. Evidence: $($sleepCapability -join ' ' )"
     }
@@ -2170,44 +3291,132 @@ function Run-DpiAndEnvironmentFlow {
         $handle = [IntPtr]$script:window.Current.NativeWindowHandle
         $dpi = [TaskronomeAcceptanceNative]::GetDpiForWindow($handle)
         Assert-True ($dpi -ge 96) "Window DPI was invalid: $dpi."
-        Select-Tab 'RunningTab'
-        Assert-True ((Find-ElementById 'RemainingText').Current.BoundingRectangle.Width -gt 0) 'Remaining text had no visible bounds.'
-        Assert-True ((Find-ElementById 'PauseResumeButton').Current.BoundingRectangle.Width -gt 0) 'Pause button had no visible bounds.'
-        Assert-True ((Find-ElementById 'SkipButton').Current.BoundingRectangle.Width -gt 0) 'Skip button had no visible bounds.'
-        Assert-True ((Find-ElementById 'CompleteButton').Current.BoundingRectangle.Width -gt 0) 'Complete button had no visible bounds.'
-        Assert-True ((Find-ElementById 'StopButton').Current.BoundingRectangle.Width -gt 0) 'Stop button had no visible bounds.'
-        Select-Tab 'TasksTab'
+        $originalRect = $script:window.Current.BoundingRectangle
+        $minimumResult = [TaskronomeAcceptanceNative]::SetWindowPos(
+            $handle,
+            [IntPtr]::Zero,
+            [int]$originalRect.Left,
+            [int]$originalRect.Top,
+            760,
+            560,
+            0x0004 -bor 0x0010)
+        Assert-True $minimumResult 'Unable to place the window at its declared minimum size.'
+        try {
+            Start-Sleep -Milliseconds 500
+            $minimumRect = $script:window.Current.BoundingRectangle
+            Assert-True ($minimumRect.Width -ge 750 -and $minimumRect.Height -ge 550) 'The minimum-size window was smaller than the declared bounds.'
+            Assert-CoreLayout
+        }
+        finally {
+            [void][TaskronomeAcceptanceNative]::SetWindowPos(
+                $handle,
+                [IntPtr]::Zero,
+                [int]$originalRect.Left,
+                [int]$originalRect.Top,
+                [int]$originalRect.Width,
+                [int]$originalRect.Height,
+                0x0004 -bor 0x0010)
+            Start-Sleep -Milliseconds 300
+        }
     } -ScreenshotName '25-current-dpi-layout' -SnapshotFiles | Out-Null
 
-    Invoke-Recorded -TestId 'single-monitor-offscreen-clamp' -Category 'DPI/Displays' -Expected 'If there is one monitor, stored off-screen placement is clamped back into the visible work area.' -Action {
-        $screens = [System.Windows.Forms.Screen]::AllScreens
-        if ($screens.Count -gt 1) {
-            throw 'This machine has multiple monitors; the single-monitor off-screen placement branch is N/A.'
-        }
-
-        $dataPath = Join-Path $script:dataDir 'data.json'
-        Stop-Taskronome
-        $json = Get-Content -LiteralPath $dataPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $json.WindowPlacement.Left = -10000
-        $json.WindowPlacement.Top = -10000
-        $json | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $dataPath -Encoding UTF8
-        Start-Taskronome
-        $rect = $script:window.Current.BoundingRectangle
-        Assert-True ($rect.Right -gt $screens[0].WorkingArea.Left -and $rect.Bottom -gt $screens[0].WorkingArea.Top) 'Window placement remained off-screen.'
-    } -ScreenshotName '26-offscreen-clamp' -SnapshotFiles | Out-Null
+    $singleMonitorEnvironment = Get-EnvironmentSnapshot
+    if ($singleMonitorEnvironment.MonitorCount -gt 1) {
+        Invoke-Recorded -TestId 'single-monitor-offscreen-clamp' -Category 'DPI/Displays' -Expected 'If there is one monitor, stored off-screen placement is clamped back into the visible work area.' -Action { throw 'A second monitor is present; this single-monitor branch is not applicable.' } -NaReason "N/A: display enumeration found $($singleMonitorEnvironment.MonitorCount) monitor(s), so a one-monitor-only placement test is not applicable." | Out-Null
+    }
+    else {
+        Invoke-Recorded -TestId 'single-monitor-offscreen-clamp' -Category 'DPI/Displays' -Expected 'If there is one monitor, stored off-screen placement is clamped back into the visible work area.' -Action {
+            $screens = [System.Windows.Forms.Screen]::AllScreens
+            $dataPath = Join-Path $script:dataDir 'data.json'
+            Stop-Taskronome
+            $json = Get-Content -LiteralPath $dataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $json.WindowPlacement.Left = -10000
+            $json.WindowPlacement.Top = -10000
+            $json | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $dataPath -Encoding UTF8
+            Start-Taskronome
+            $rect = $script:window.Current.BoundingRectangle
+            Assert-True ($rect.Right -gt $screens[0].WorkingArea.Left -and $rect.Bottom -gt $screens[0].WorkingArea.Top) 'Window placement remained off-screen.'
+        } -ScreenshotName '26-offscreen-clamp' -SnapshotFiles | Out-Null
+    }
 
     $environment = Get-EnvironmentSnapshot
     if ($environment.MonitorCount -lt 2) {
         Invoke-Recorded -TestId 'second-monitor' -Category 'DPI/Displays' -Expected 'A second monitor is enumerated when present.' -Action { throw 'No second monitor is present on this machine.' } -NaReason "N/A: monitor enumeration found $($environment.MonitorCount) monitor(s); no second display is available." | Out-Null
     }
     else {
-        Invoke-Recorded -TestId 'second-monitor' -Category 'DPI/Displays' -Expected 'Move, maximize, restore, and recover the window on the second monitor.' -Action {
-            $second = [System.Windows.Forms.Screen]::AllScreens | Where-Object { -not $_.Primary } | Select-Object -First 1
+        Invoke-Recorded -TestId 'second-monitor' -Category 'DPI/Displays' -Expected 'Move, maximize, restore, unplug/disable, and recover the window on the second monitor.' -Action {
+            $screensBefore = [System.Windows.Forms.Screen]::AllScreens
+            $second = @($screensBefore | Where-Object { -not $_.Primary }) | Select-Object -First 1
+            Assert-True ($null -ne $second) 'The second monitor disappeared before the multi-monitor test began.'
             $handle = [IntPtr]$script:window.Current.NativeWindowHandle
-            $moveResult = [TaskronomeAcceptanceNative]::SetWindowPos($handle, [IntPtr]::Zero, $second.WorkingArea.Left + 40, $second.WorkingArea.Top + 40, 0, 0, 0x0001 -bor 0x0004)
+            $moveResult = [TaskronomeAcceptanceNative]::SetWindowPos(
+                $handle,
+                [IntPtr]::Zero,
+                $second.WorkingArea.Left + 40,
+                $second.WorkingArea.Top + 40,
+                920,
+                640,
+                0x0004 -bor 0x0010)
             Assert-True $moveResult 'SetWindowPos failed for the second monitor.'
-            Start-Sleep -Milliseconds 400
-        } -ScreenshotName '27-second-monitor' | Out-Null
+            Start-Sleep -Milliseconds 500
+            $windowPattern = [System.Windows.Automation.WindowPattern]$script:window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+            $windowPattern.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
+            Start-Sleep -Milliseconds 700
+            Assert-Equal ([System.Windows.Automation.WindowVisualState]::Maximized.ToString()) $windowPattern.Current.WindowVisualState.ToString() 'The window did not maximize on the second monitor.'
+            Assert-CoreLayout
+            $windowPattern.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal)
+            Start-Sleep -Milliseconds 700
+            Assert-Equal ([System.Windows.Automation.WindowVisualState]::Normal.ToString()) $windowPattern.Current.WindowVisualState.ToString() 'The window did not restore on the second monitor.'
+            $normalRect = $script:window.Current.BoundingRectangle
+            Assert-True ($normalRect.Left -lt $second.WorkingArea.Right -and $normalRect.Right -gt $second.WorkingArea.Left -and $normalRect.Top -lt $second.WorkingArea.Bottom -and $normalRect.Bottom -gt $second.WorkingArea.Top) 'The restored window was not on the second monitor.'
+
+            if (-not $OperatorAssistance) {
+                throw 'A second monitor is present; disable/unplug it with -OperatorAssistance to complete recovery verification.'
+            }
+
+            Read-Host '请临时禁用或拔下第二显示器，等待 Windows 完成显示器重新枚举后按回车继续' | Out-Null
+            $afterDisableDeadline = [DateTime]::UtcNow.AddSeconds(15)
+            do {
+                $screensAfterDisable = [System.Windows.Forms.Screen]::AllScreens
+                if ($screensAfterDisable.Count -lt $screensBefore.Count) {
+                    break
+                }
+
+                Start-Sleep -Milliseconds 500
+            } while ([DateTime]::UtcNow -lt $afterDisableDeadline)
+            Assert-True ($screensAfterDisable.Count -lt $screensBefore.Count) 'The second monitor was not removed from Windows display enumeration.'
+            $recoveredRect = $script:window.Current.BoundingRectangle
+            $visibleOnRemainingScreen = @($screensAfterDisable | Where-Object {
+                    $recoveredRect.Left -lt $_.WorkingArea.Right -and
+                    $recoveredRect.Right -gt $_.WorkingArea.Left -and
+                    $recoveredRect.Top -lt $_.WorkingArea.Bottom -and
+                    $recoveredRect.Bottom -gt $_.WorkingArea.Top
+                }).Count -gt 0
+            Assert-True $visibleOnRemainingScreen 'The window was left outside every remaining monitor work area.'
+
+            Read-Host '请重新接回或启用第二显示器，等待 Windows 恢复显示器后按回车继续' | Out-Null
+            $restoreDeadline = [DateTime]::UtcNow.AddSeconds(20)
+            do {
+                $screensAfterRestore = [System.Windows.Forms.Screen]::AllScreens
+                if ($screensAfterRestore.Count -ge $screensBefore.Count) {
+                    break
+                }
+
+                Start-Sleep -Milliseconds 500
+            } while ([DateTime]::UtcNow -lt $restoreDeadline)
+            Assert-True ($screensAfterRestore.Count -ge $screensBefore.Count) 'The second monitor was not restored before the display test ended.'
+            $primary = @($screensAfterRestore | Where-Object Primary) | Select-Object -First 1
+            [void][TaskronomeAcceptanceNative]::SetWindowPos(
+                $handle,
+                [IntPtr]::Zero,
+                $primary.WorkingArea.Left + 40,
+                $primary.WorkingArea.Top + 40,
+                920,
+                640,
+                0x0004 -bor 0x0010)
+            Start-Sleep -Milliseconds 500
+            Assert-CoreLayout
+        } -ScreenshotName '27-second-monitor-recovery' -SnapshotFiles | Out-Null
     }
 
     $remoteEnvironment = Get-EnvironmentSnapshot
@@ -2243,25 +3452,74 @@ function Run-DpiAndEnvironmentFlow {
         throw 'Standard user does not have enabled SeSystemtimePrivilege.'
     } -NaReason $timeNaReason | Out-Null
 
-    Invoke-Recorded -TestId 'additional-dpi-matrix' -Category 'DPI/Layout' -Expected 'Record availability of 100%, 125%, 150%, and 200% scaling without changing the user profile automatically.' -Action {
-        $currentScale = (Get-EnvironmentSnapshot).CurrentScalePercent
-        return "current-$currentScale-percent; operator scale changes are not applied automatically"
-    } -NaReason 'N/A: additional Windows display scale changes require an operator session action; the actual current DPI was fully exercised and recorded.' | Out-Null
+    $originalScale = (Get-EnvironmentSnapshot).CurrentScalePercent
+    $dpiScaleTargets = @(100, 125, 150, 200)
+    foreach ($scaleTarget in $dpiScaleTargets) {
+        if (-not $OperatorAssistance) {
+            Invoke-Recorded -TestId "dpi-scale-$scaleTarget" -Category 'DPI/Layout' -Expected "Read the layout after setting Windows display scaling to $scaleTarget%." -Action {
+                throw "Windows display scaling $scaleTarget% requires one operator action; rerun with -OperatorAssistance."
+            } -ScreenshotName "29-dpi-$scaleTarget" -SnapshotFiles | Out-Null
+            continue
+        }
 
-    $highContrastNaReason = if (-not $OperatorAssistance) {
-        'N/A: high-contrast mode requires the operator to toggle and restore the Windows accessibility setting; current setting is recorded.'
+        $scaleAnswer = Read-Host "请在 Windows 显示设置将主显示缩放设为 $scaleTarget%，回到 Taskronome 后按回车；若该比例不在设置中请输入 unavailable"
+        if ($scaleAnswer -match '^\s*unavailable\b') {
+            $scaleEvidence = Get-EnvironmentSnapshot
+            Invoke-Recorded -TestId "dpi-scale-$scaleTarget" -Category 'DPI/Layout' -Expected "Read the layout after setting Windows display scaling to $scaleTarget%." -Action { throw "Windows display settings did not offer $scaleTarget%." } -NaReason "N/A: operator reported that Windows did not offer $scaleTarget%; display capability evidence recorded with current monitor layout and scale $($scaleEvidence.CurrentScalePercent)%." -SnapshotFiles | Out-Null
+            continue
+        }
+
+        Invoke-Recorded -TestId "dpi-scale-$scaleTarget" -Category 'DPI/Layout' -Expected "Read the layout after setting Windows display scaling to $scaleTarget%." -Action {
+            Start-Sleep -Seconds 2
+            $scaleEvidence = Get-EnvironmentSnapshot
+            Assert-Equal $scaleTarget $scaleEvidence.CurrentScalePercent "The active window did not report the requested $scaleTarget% scale."
+            Assert-CoreLayout
+            return "scale=$($scaleEvidence.CurrentScalePercent); dpi=$($scaleEvidence.CurrentDpiForWindow)"
+        } -ScreenshotName "29-dpi-$scaleTarget" -SnapshotFiles | Out-Null
+    }
+
+    if ($OperatorAssistance) {
+        $restoreScaleAnswer = Read-Host "请将主显示缩放恢复为原始 $originalScale%，回到 Taskronome 后按回车"
+        if ($restoreScaleAnswer -match '^\s*unavailable\b') {
+            Invoke-Recorded -TestId 'dpi-scale-restored' -Category 'DPI/Layout' -Expected "Restore the original Windows display scale of $originalScale%." -Action { throw 'The original display scale was not restored.' } -NaReason 'N/A: the operator reported that the original display scale was unavailable; the current display capability is retained in the environment snapshot.' -SnapshotFiles | Out-Null
+        }
+        else {
+            Invoke-Recorded -TestId 'dpi-scale-restored' -Category 'DPI/Layout' -Expected "Restore the original Windows display scale of $originalScale%." -Action {
+                Start-Sleep -Seconds 2
+                $restoredScale = Get-EnvironmentSnapshot
+                Assert-Equal $originalScale $restoredScale.CurrentScalePercent 'The original display scale was not restored.'
+                Assert-CoreLayout
+                return "restored-$($restoredScale.CurrentScalePercent)-percent"
+            } -ScreenshotName '33-dpi-restored' -SnapshotFiles | Out-Null
+        }
     }
     else {
-        ''
+        Invoke-Recorded -TestId 'dpi-scale-restored' -Category 'DPI/Layout' -Expected "Restore the original Windows display scale of $originalScale%." -Action { throw 'DPI restoration requires the same operator session that changed the scale.' } -ScreenshotName '33-dpi-restored' -SnapshotFiles | Out-Null
     }
+
+    $originalHighContrast = (Get-EnvironmentSnapshot).HighContrast
     Invoke-Recorded -TestId 'high-contrast' -Category 'Accessibility' -Expected 'High contrast mode preserves core control readability and is restored afterward.' -Action {
         if (-not $OperatorAssistance) {
             throw 'High contrast toggle requires one operator action; rerun with -OperatorAssistance.'
         }
 
-        Read-Host '请打开 Windows 高对比度，确认 Taskronome 核心按钮和确认区域可辨认，然后恢复原设置并按回车' | Out-Null
-        return 'operator-confirmed-and-restored'
-    } -NaReason $highContrastNaReason -ScreenshotName '28-accessibility-current' | Out-Null
+        if (-not $originalHighContrast) {
+            Start-Process 'ms-settings:easeofaccess-highcontrast' | Out-Null
+            Read-Host '请在 Windows 高对比度设置中打开高对比度，确认 Taskronome 核心按钮、倒计时、状态文字和确认区域可辨认后按回车' | Out-Null
+            $enabledContrast = Get-EnvironmentSnapshot
+            Assert-True $enabledContrast.HighContrast 'Windows high contrast was not enabled for the acceptance check.'
+            Assert-CoreLayout
+            Read-Host '请将 Windows 高对比度恢复为原始关闭状态，回到 Taskronome 后按回车' | Out-Null
+        }
+        else {
+            Assert-CoreLayout
+            Read-Host '高对比度原本已开启；请确认 Taskronome 核心按钮、倒计时、状态文字和确认区域可辨认后按回车' | Out-Null
+        }
+
+        $restoredContrast = Get-EnvironmentSnapshot
+        Assert-Equal ([bool]$originalHighContrast) ([bool]$restoredContrast.HighContrast) 'High contrast was not restored to its original state.'
+        return "original=$originalHighContrast; restored=$($restoredContrast.HighContrast)"
+    } -ScreenshotName '34-accessibility-high-contrast' -SnapshotFiles | Out-Null
 
     return $environment
 }
@@ -2270,8 +3528,42 @@ function Write-Reports {
     param([Parameter(Mandatory = $true)][DateTimeOffset]$StartedAtUtc)
 
     $endedAtUtc = [DateTimeOffset]::UtcNow
-    $script:networkAfter = if ($null -ne $script:process) { Get-NetworkSnapshot $script:process.Id } else { @() }
-    $environment = Get-EnvironmentSnapshot
+    $script:networkAfter = @()
+    if ($null -ne $script:process) {
+        try {
+            $script:process.Refresh()
+            if (-not $script:process.HasExited) {
+                $script:networkAfter = @(Get-NetworkSnapshot $script:process.Id)
+            }
+        }
+        catch {
+            $script:networkAfter = @()
+        }
+    }
+
+    try {
+        $environment = Get-EnvironmentSnapshot
+    }
+    catch {
+        $environment = [pscustomobject][ordered]@{
+            Tester = 'unavailable'
+            Windows = [pscustomobject][ordered]@{ Caption = 'unavailable'; Build = 'unavailable'; Architecture = 'unavailable' }
+            CpuArchitecture = [Environment]::GetEnvironmentVariable('PROCESSOR_ARCHITECTURE')
+            DotnetSdk = 'unavailable'
+            MonitorCount = 0
+            Monitors = @()
+            CurrentDpiForWindow = $null
+            CurrentScalePercent = $null
+            HighContrast = $null
+            Notification = [pscustomobject][ordered]@{ Setting = 'Unavailable'; GetAllAsync = 'Unavailable'; Assembly = ''; Error = $_.Exception.Message }
+            PowerCapabilities = @()
+            SessionName = 'unavailable'
+            SessionType = 'unknown'
+            ClientNamePresent = $false
+            UserInteractive = [Environment]::UserInteractive
+            ComputerSystem = [pscustomobject][ordered]@{ Model = 'unavailable'; SystemType = 'unavailable' }
+        }
+    }
     $payload = [ordered]@{
         schemaVersion = 1
         application = [ordered]@{
@@ -2332,8 +3624,10 @@ function Write-Reports {
     [void]$lines.Add('| --- | --- | --- | --- | --- | --- | --- | --- | --- |')
     foreach ($test in $script:results) {
         $evidence = (@($test.ScreenshotPaths) + @($test.LogPaths)) -join ', '
-        $expected = ([string]$test.Expected).Replace('|', '\|')
-        $actual = ([string]$test.Actual).Replace('|', '\|')
+        $expectedText = if ($null -eq $test.Expected) { '' } else { [string]$test.Expected }
+        $actualText = if ($null -eq $test.Actual) { '' } else { [string]$test.Actual }
+        $expected = $expectedText.Replace('|', '\|')
+        $actual = $actualText.Replace('|', '\|')
         [void]$lines.Add("| $($test.TestId) | $($test.Category) | $($test.Result) | $expected | $actual | $($test.StateBefore) → $($test.StateAfter) | $($test.RemainingBefore) → $($test.RemainingAfter) | $($test.SegmentCountBefore) → $($test.SegmentCountAfter) | $evidence |")
     }
     [void]$lines.Add('')
@@ -2437,14 +3731,23 @@ finally {
         $exitCode = 1
     }
 
-    Stop-Taskronome
-    $report = Write-Reports $startedAtUtc
-    $archive = Write-ChecksumsAndArchive
-    Write-Host "Acceptance root: $script:root"
-    Write-Host "JSON: $($report.JsonPath)"
-    Write-Host "Markdown: $($report.MarkdownPath)"
-    Write-Host "Evidence ZIP: $($archive.ArchivePath)"
-    Write-Host "Evidence ZIP SHA-256: $($archive.ArchiveSha256)"
+    Stop-Taskronome -Force
+    try {
+        $report = Write-Reports $startedAtUtc
+    }
+    catch {
+        $exitCode = 1
+        Write-Error ("Write-Reports failed: " + ($_ | Format-List * -Force | Out-String))
+        $report = $null
+    }
+    if ($null -ne $report) {
+        $archive = Write-ChecksumsAndArchive
+        Write-Host "Acceptance root: $script:root"
+        Write-Host "JSON: $($report.JsonPath)"
+        Write-Host "Markdown: $($report.MarkdownPath)"
+        Write-Host "Evidence ZIP: $($archive.ArchivePath)"
+        Write-Host "Evidence ZIP SHA-256: $($archive.ArchiveSha256)"
+    }
 
     $failCount = @($script:results | Where-Object Result -eq 'Fail').Count
     if ($failCount -gt 0) {

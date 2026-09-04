@@ -36,6 +36,7 @@ public partial class MainWindow : Window, IDisposable
     private bool _forceClose;
     private bool _closeHintShown;
     private bool _disposed;
+    private long _lastRotationInputTimestamp;
 
     public MainWindow(
         MainWindowViewModel viewModel,
@@ -340,16 +341,45 @@ public partial class MainWindow : Window, IDisposable
         }
     }
 
-    private void ConfirmTaskButton_Click(object sender, RoutedEventArgs e) => _viewModel.ConfirmCurrentTask();
+    private void ConfirmTaskButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (TryAcceptRotationInput())
+        {
+            _viewModel.ConfirmCurrentTask();
+        }
+    }
 
-    private void PauseResumeButton_Click(object sender, RoutedEventArgs e) => _viewModel.PauseOrResume();
+    private void PauseResumeButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (TryAcceptRotationInput())
+        {
+            _viewModel.PauseOrResume();
+        }
+    }
 
-    private void SkipButton_Click(object sender, RoutedEventArgs e) => _viewModel.SkipCurrentSlice();
+    private void SkipButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (TryAcceptRotationInput())
+        {
+            _viewModel.SkipCurrentSlice();
+        }
+    }
 
-    private void CompleteButton_Click(object sender, RoutedEventArgs e) => _viewModel.CompleteCurrentTask();
+    private void CompleteButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (TryAcceptRotationInput())
+        {
+            _viewModel.CompleteCurrentTask();
+        }
+    }
 
     private void StopButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!TryAcceptRotationInput())
+        {
+            return;
+        }
+
         var result = WpfMessageBox.Show(
             this,
             "停止当前轮转？已经确认工作的时长会保留。",
@@ -362,6 +392,19 @@ public partial class MainWindow : Window, IDisposable
             _viewModel.StopRotation();
             MainTabs.SelectedIndex = 0;
         }
+    }
+
+    private bool TryAcceptRotationInput()
+    {
+        var now = Stopwatch.GetTimestamp();
+        var minimumInterval = Stopwatch.Frequency / 2;
+        if (_lastRotationInputTimestamp != 0 && now - _lastRotationInputTimestamp < minimumInterval)
+        {
+            return false;
+        }
+
+        _lastRotationInputTimestamp = now;
+        return true;
     }
 
     private void ExportCsvButton_Click(object sender, RoutedEventArgs e)

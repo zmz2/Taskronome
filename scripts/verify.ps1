@@ -161,6 +161,10 @@ try {
     if (-not (Test-Path -LiteralPath $appPath)) {
         throw "Publish completed without Taskronome.exe"
     }
+    $notificationResource = Join-Path $publish "Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+    if (-not (Test-Path -LiteralPath $notificationResource -PathType Leaf)) {
+        throw "Publish output is missing Microsoft.WindowsAppRuntime.Insights.Resource.dll required by unpackaged notifications."
+    }
 
     $uiSmokeArguments = @(
         "-NoProfile",

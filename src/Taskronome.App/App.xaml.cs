@@ -1,7 +1,10 @@
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Threading;
+using Microsoft.Windows.AppNotifications;
 using Taskronome.App.Services;
 using Taskronome.App.ViewModels;
 using Taskronome.Core;
@@ -19,6 +22,7 @@ public partial class App : System.Windows.Application, IDisposable
     private MainWindowViewModel? _viewModel;
     private MainWindow? _mainWindow;
     private DispatcherTimer? _smokeTimeout;
+    private DispatcherTimer? _acceptanceNotificationProbe;
     private bool _smokeTestMode;
     private bool _testMode;
     private bool _notificationDryRun;
@@ -26,6 +30,10 @@ public partial class App : System.Windows.Application, IDisposable
     private int _smokeHoldMilliseconds;
     private string? _smokeResultPath;
     private string? _dataDirectory;
+    private string? _acceptanceReadOnlyToken;
+    private string? _acceptanceReadOnlyOutputPath;
+    private bool _acceptanceNotificationProbeBusy;
+    private DateTimeOffset _acceptanceNotificationProbeNextAttemptUtc;
     private bool _exitRequested;
 
     protected override void OnStartup(StartupEventArgs e)
@@ -54,6 +62,13 @@ public partial class App : System.Windows.Application, IDisposable
         _smokeResultPath = startupOptions.SmokeResultPath;
         _smokeHoldMilliseconds = startupOptions.SmokeHoldMilliseconds;
         _deleteSmokeData = _smokeTestMode && _dataDirectory is null;
+        _acceptanceReadOnlyToken = startupOptions.AcceptanceReadOnlyToken;
+        _acceptanceReadOnlyOutputPath = startupOptions.AcceptanceReadOnlyOutputPath;
+
+        if (_acceptanceReadOnlyToken is not null && (_testMode || _notificationDryRun))
+        {
+            throw new ArgumentException("--acceptance-read-only 只能与真实生产通知服务一起使用。", nameof(e));
+        }
 
         var rootDirectory = _dataDirectory ?? (_smokeTestMode
             ? Path.Combine(Path.GetTempPath(), $"Taskronome-Smoke-{Guid.NewGuid():N}")
@@ -109,6 +124,18 @@ public partial class App : System.Windows.Application, IDisposable
             });
 
             _mainWindow.Show();
+
+            if (_acceptanceReadOnlyOutputPath is not null)
+            {
+                _acceptanceNotificationProbe = new DispatcherTimer
+                {
+                    Interval = TimeSpan.FromMilliseconds(750),
+                };
+                _acceptanceNotificationProbe.Tick += AcceptanceNotificationProbe_Tick;
+                _acceptanceNotificationProbeNextAttemptUtc = DateTimeOffset.UtcNow.AddSeconds(2);
+                _acceptanceNotificationProbe.Start();
+                _ = WriteAcceptanceNotificationEvidenceAsync();
+            }
 
             if (_smokeTestMode)
             {
@@ -203,6 +230,11 @@ public partial class App : System.Windows.Application, IDisposable
 
         _exitRequested = true;
         _smokeTimeout?.Stop();
+        _acceptanceNotificationProbe?.Stop();
+        if (_acceptanceNotificationProbe is not null)
+        {
+            _acceptanceNotificationProbe.Tick -= AcceptanceNotificationProbe_Tick;
+        }
         if (_mainWindow is not null)
         {
             _viewModel?.UpdateWindowPlacement(WindowPlacementService.Capture(_mainWindow));
@@ -286,6 +318,11 @@ public partial class App : System.Windows.Application, IDisposable
     protected override void OnExit(ExitEventArgs e)
     {
         _smokeTimeout?.Stop();
+        _acceptanceNotificationProbe?.Stop();
+        if (_acceptanceNotificationProbe is not null)
+        {
+            _acceptanceNotificationProbe.Tick -= AcceptanceNotificationProbe_Tick;
+        }
         _viewModel?.PrepareForExit();
         _viewModel?.Dispose();
         _notificationService?.Dispose();
@@ -313,10 +350,135 @@ public partial class App : System.Windows.Application, IDisposable
     public void Dispose()
     {
         _smokeTimeout?.Stop();
+        _acceptanceNotificationProbe?.Stop();
+        if (_acceptanceNotificationProbe is not null)
+        {
+            _acceptanceNotificationProbe.Tick -= AcceptanceNotificationProbe_Tick;
+        }
         _viewModel?.Dispose();
         _notificationService?.Dispose();
         _singleInstance?.Dispose();
         GC.SuppressFinalize(this);
+    }
+
+    private void AcceptanceNotificationProbe_Tick(object? sender, EventArgs e)
+    {
+        _ = WriteAcceptanceNotificationEvidenceAsync();
+    }
+
+    private async Task WriteAcceptanceNotificationEvidenceAsync()
+    {
+        if (_acceptanceNotificationProbeBusy || DateTimeOffset.UtcNow < _acceptanceNotificationProbeNextAttemptUtc || string.IsNullOrWhiteSpace(_acceptanceReadOnlyToken) ||
+            string.IsNullOrWhiteSpace(_acceptanceReadOnlyOutputPath))
+        {
+            return;
+        }
+
+        _acceptanceNotificationProbeBusy = true;
+        _acceptanceNotificationProbeNextAttemptUtc = DateTimeOffset.UtcNow.AddSeconds(20);
+        try
+        {
+            var manager = AppNotificationManager.Default;
+            var isSupported = AppNotificationManager.IsSupported();
+            var setting = manager.Setting;
+            WriteAcceptanceNotificationEvidence(new
+            {
+                SchemaVersion = 1,
+                Source = "Taskronome application process",
+                ReadOnly = true,
+                TokenSha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(_acceptanceReadOnlyToken))).ToLowerInvariant(),
+                IsSupported = isSupported,
+                Setting = setting.ToString(),
+                GetAllAsync = new
+                {
+                    Succeeded = false,
+                    Pending = true,
+                    Count = 0,
+                    Notifications = Array.Empty<object>(),
+                },
+                GeneratedUtc = DateTimeOffset.UtcNow,
+            });
+            var operation = manager.GetAllAsync();
+            var notificationsTask = System.WindowsRuntimeSystemExtensions.AsTask(operation);
+            var notifications = await notificationsTask;
+            var notificationRecords = new List<object>();
+            foreach (var notification in notifications)
+            {
+                notificationRecords.Add(new
+                {
+                    notification.Id,
+                    notification.Tag,
+                    notification.Group,
+                    notification.Payload,
+                });
+            }
+
+            var evidence = new
+            {
+                SchemaVersion = 1,
+                Source = "Taskronome application process",
+                ReadOnly = true,
+                TokenSha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(_acceptanceReadOnlyToken))).ToLowerInvariant(),
+                IsSupported = isSupported,
+                Setting = setting.ToString(),
+                GetAllAsync = new
+                {
+                    Succeeded = true,
+                    Count = notificationRecords.Count,
+                    Notifications = notificationRecords,
+                },
+                GeneratedUtc = DateTimeOffset.UtcNow,
+            };
+
+            WriteAcceptanceNotificationEvidence(evidence);
+        }
+        catch (Exception exception)
+        {
+            var evidence = new
+            {
+                SchemaVersion = 1,
+                Source = "Taskronome application process",
+                ReadOnly = true,
+                TokenSha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(_acceptanceReadOnlyToken))).ToLowerInvariant(),
+                IsSupported = (bool?)null,
+                Setting = "Unavailable",
+                GetAllAsync = new
+                {
+                    Succeeded = false,
+                    Count = 0,
+                    Notifications = Array.Empty<object>(),
+                },
+                Error = exception.Message,
+                GeneratedUtc = DateTimeOffset.UtcNow,
+            };
+
+            WriteAcceptanceNotificationEvidence(evidence);
+        }
+        finally
+        {
+            _acceptanceNotificationProbeBusy = false;
+        }
+    }
+
+    private void WriteAcceptanceNotificationEvidence(object evidence)
+    {
+        try
+        {
+            var parent = Path.GetDirectoryName(_acceptanceReadOnlyOutputPath);
+            if (!string.IsNullOrWhiteSpace(parent))
+            {
+                Directory.CreateDirectory(parent);
+            }
+
+            File.WriteAllText(
+                _acceptanceReadOnlyOutputPath!,
+                JsonSerializer.Serialize(evidence, SmokeResultSerializerOptions),
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _logger?.LogError("Unable to write the acceptance notification evidence.", exception);
+        }
     }
 
     private sealed record StartupOptions(
@@ -325,7 +487,9 @@ public partial class App : System.Windows.Application, IDisposable
         bool NotificationDryRun,
         string? DataDirectory,
         string? SmokeResultPath,
-        int SmokeHoldMilliseconds)
+        int SmokeHoldMilliseconds,
+        string? AcceptanceReadOnlyToken,
+        string? AcceptanceReadOnlyOutputPath)
     {
         public static StartupOptions Parse(string[] args)
         {
@@ -336,6 +500,8 @@ public partial class App : System.Windows.Application, IDisposable
             string? dataDirectory = null;
             string? smokeResultPath = null;
             var smokeHoldMilliseconds = 0;
+            string? acceptanceReadOnlyToken = null;
+            string? acceptanceReadOnlyOutputPath = null;
 
             for (var index = 0; index < args.Length; index++)
             {
@@ -360,6 +526,10 @@ public partial class App : System.Windows.Application, IDisposable
                     case "--smoke-hold-ms":
                         smokeHoldMilliseconds = ReadIntegerArgument(args, ref index, "--smoke-hold-ms", 0, 30000);
                         break;
+                    case "--acceptance-read-only":
+                        acceptanceReadOnlyToken = ReadGuidArgument(args, ref index, "--acceptance-read-only");
+                        acceptanceReadOnlyOutputPath = ReadPathArgument(args, ref index, "--acceptance-read-only");
+                        break;
                     default:
                         throw new ArgumentException($"未知启动参数：{args[index]}", nameof(args));
                 }
@@ -371,7 +541,19 @@ public partial class App : System.Windows.Application, IDisposable
                 notificationDryRun,
                 dataDirectory,
                 smokeResultPath,
-                smokeHoldMilliseconds);
+                smokeHoldMilliseconds,
+                acceptanceReadOnlyToken,
+                acceptanceReadOnlyOutputPath);
+        }
+
+        private static string ReadGuidArgument(string[] args, ref int index, string option)
+        {
+            if (index + 1 >= args.Length || !Guid.TryParse(args[++index], out var value))
+            {
+                throw new ArgumentException($"启动参数 {option} 需要一个 GUID 只读令牌。", nameof(args));
+            }
+
+            return value.ToString("D");
         }
 
         private static string ReadPathArgument(string[] args, ref int index, string option)

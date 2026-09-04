@@ -56,8 +56,12 @@ function Assert-PortableZip {
     try {
         $devUsersPath = "C:" + "/Users/"
         $taskronomeDevPath = "D:" + "/VibeCodingTools"
+        $resourceEntryFound = $false
         foreach ($entry in $archive.Entries) {
             $normalized = $entry.FullName.Replace("\", "/")
+            if ($normalized -eq "Microsoft.WindowsAppRuntime.Insights.Resource.dll") {
+                $resourceEntryFound = $true
+            }
             if ($normalized -match "(^|/)(src|tests|artifacts|bin|obj)(/|$)" -or
                 $normalized -match "(^|/)(data\.json|data\.json\.bak|logs)(/|$)" -or
                 $normalized -match "\.pdb$" -or
@@ -66,6 +70,9 @@ function Assert-PortableZip {
                 $normalized.Contains($devUsersPath)) {
                 throw "Portable package contains a development or user-data path: $($entry.FullName)"
             }
+        }
+        if (-not $resourceEntryFound) {
+            throw "Portable package is missing Microsoft.WindowsAppRuntime.Insights.Resource.dll required by unpackaged Windows App SDK notifications."
         }
     }
     finally {
@@ -95,6 +102,15 @@ try {
         --no-restore `
         "-p:Version=$Version" `
         --output $publish
+
+    $notificationResource = Join-Path $publish "Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+    if (-not (Test-Path -LiteralPath $notificationResource -PathType Leaf)) {
+        throw "Publish output is missing Microsoft.WindowsAppRuntime.Insights.Resource.dll."
+    }
+    $notificationResourceHash = (Get-FileHash -LiteralPath $notificationResource -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($notificationResourceHash -ne "5485bbb3675830ab386b02b29c0fbe012764c4f04fb2573cac32985716589db6") {
+        throw "Unexpected Microsoft.WindowsAppRuntime.Insights.Resource.dll SHA-256: $notificationResourceHash"
+    }
 
     foreach ($file in @("README.md", "LICENSE", "THIRD-PARTY-NOTICES.md", "PRIVACY.md")) {
         Copy-Item -LiteralPath (Join-Path $repoRoot $file) -Destination $publish -Force

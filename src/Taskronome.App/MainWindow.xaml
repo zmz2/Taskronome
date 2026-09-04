@@ -150,10 +150,9 @@
                                 Background="#FFF7ED"
                                 BorderBrush="#FED7AA"
                                 BorderThickness="1"
-                                Visibility="{Binding IsAwaitingConfirmation, Converter={StaticResource BooleanToVisibilityConverter}}"
-                                AutomationProperties.AutomationId="ConfirmationPanel">
+                                Visibility="{Binding IsAwaitingConfirmation, Converter={StaticResource BooleanToVisibilityConverter}}">
                             <StackPanel>
-                                <TextBlock Text="轮到这项任务了" FontSize="20" FontWeight="Bold" Foreground="{StaticResource WarningBrush}" HorizontalAlignment="Center" />
+                                <TextBlock Text="轮到这项任务了" FontSize="20" FontWeight="Bold" Foreground="{StaticResource WarningBrush}" HorizontalAlignment="Center" AutomationProperties.AutomationId="ConfirmationPanel" />
                                 <TextBlock Text="{Binding ConfirmationText}" TextWrapping="Wrap" TextAlignment="Center" Margin="0,8,0,14" AutomationProperties.AutomationId="ConfirmationText" />
                                 <Button x:Name="ConfirmTaskButton"
                                         Content="{DynamicResource ConfirmButton}"
@@ -173,10 +172,9 @@
                                 Background="#FFF1F2"
                                 BorderBrush="#FECDD3"
                                 BorderThickness="1"
-                                Visibility="{Binding IsAbsentPaused, Converter={StaticResource BooleanToVisibilityConverter}}"
-                                AutomationProperties.AutomationId="AbsentPausePanel">
+                                Visibility="{Binding IsAbsentPaused, Converter={StaticResource BooleanToVisibilityConverter}}">
                             <TextBlock Text="10 秒内未确认，已判定暂时不在电脑前。轮转已暂停，离开时间不会计入任何任务。"
-                                       TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource DangerBrush}" />
+                                       TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource DangerBrush}" AutomationProperties.AutomationId="AbsentPausePanel" />
                         </Border>
 
                         <Border Margin="0,14,0,0"
@@ -185,10 +183,9 @@
                                 Background="#FFFBEB"
                                 BorderBrush="#FDE68A"
                                 BorderThickness="1"
-                                Visibility="{Binding IsSystemPaused, Converter={StaticResource BooleanToVisibilityConverter}}"
-                                AutomationProperties.AutomationId="SystemPausePanel">
+                                Visibility="{Binding IsSystemPaused, Converter={StaticResource BooleanToVisibilityConverter}}">
                             <TextBlock Text="系统锁屏、睡眠、会话断开、进程重启或异常计时空档触发了安全暂停。请确认在场后恢复。"
-                                       TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource WarningBrush}" />
+                                       TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource WarningBrush}" AutomationProperties.AutomationId="SystemPausePanel" />
                         </Border>
 
                         <Border Style="{StaticResource CardBorder}" Margin="0,14,0,0">

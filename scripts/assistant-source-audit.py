@@ -8,6 +8,7 @@ does not replace compilation or runtime tests; those are run by verify.ps1.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -22,6 +23,63 @@ ABSOLUTE_DEV_PATH_RE = re.compile(
 )
 SOURCE_EXTENSIONS = {".cs", ".xaml", ".ps1", ".yml", ".yaml", ".iss"}
 IGNORED_DIRS = {".git", "bin", "obj", "artifacts", "TestResults", "coverage"}
+
+REQUIRED_AUTOMATION_IDS = {
+    "MainWindow.xaml": {
+        "MainWindow",
+        "MainTabs",
+        "TasksTab",
+        "RunningTab",
+        "StatisticsTab",
+        "SettingsTab",
+        "TaskGrid",
+        "NewTaskButton",
+        "EditTaskButton",
+        "DeleteTaskButton",
+        "MoveUpButton",
+        "MoveDownButton",
+        "ToggleEnabledButton",
+        "ReopenTaskButton",
+        "ResetCompletionButton",
+        "StartRotationButton",
+        "CurrentTaskText",
+        "RemainingText",
+        "ConfirmationPanel",
+        "ConfirmationText",
+        "ConfirmTaskButton",
+        "PauseResumeButton",
+        "SkipButton",
+        "CompleteButton",
+        "StopButton",
+        "AbsentPausePanel",
+        "SystemPausePanel",
+        "AlwaysOnTopCheckBox",
+        "PlaySoundCheckBox",
+        "ShowNotificationCheckBox",
+        "MinimizeToTrayCheckBox",
+        "TestNotificationButton",
+        "StatisticsScopeComboBox",
+        "ExportCsvButton",
+    },
+    "TaskEditorWindow.xaml": {
+        "TaskEditorWindow",
+        "NameTextBox",
+        "NotesTextBox",
+        "HoursTextBox",
+        "MinutesTextBox",
+        "SecondsTextBox",
+        "ValidationTextBlock",
+        "SaveTaskButton",
+        "CancelTaskButton",
+    },
+}
+
+WINDOWS_APP_RUNTIME_INSIGHTS_RESOURCE = (
+    "src/Taskronome.App/Runtime/Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+)
+WINDOWS_APP_RUNTIME_INSIGHTS_RESOURCE_SHA256 = (
+    "5485bbb3675830ab386b02b29c0fbe012764c4f04fb2573cac32985716589db6"
+)
 
 
 def read_text(path: Path) -> str:
@@ -144,6 +202,28 @@ def audit(root: Path) -> tuple[dict[str, object], list[str]]:
     for issue in absolute_path_issues:
         fail(errors, f"developer absolute path in {issue['file']}:{issue['line']}")
 
+    for file_name, required_ids in REQUIRED_AUTOMATION_IDS.items():
+        path = root / "src" / "Taskronome.App" / file_name
+        if not path.is_file():
+            continue
+        text = read_text(path)
+        present_ids = set(re.findall(r'AutomationProperties\.AutomationId\s*=\s*"([^"]+)"', text))
+        for automation_id in sorted(required_ids - present_ids):
+            fail(errors, f"required AutomationId is missing in src/Taskronome.App/{file_name}: {automation_id}")
+
+    notification_resource = root / WINDOWS_APP_RUNTIME_INSIGHTS_RESOURCE
+    notification_resource_sha256: str | None = None
+    if not notification_resource.is_file():
+        fail(errors, f"required Windows App SDK notification resource is missing: {WINDOWS_APP_RUNTIME_INSIGHTS_RESOURCE}")
+    else:
+        notification_resource_sha256 = hashlib.sha256(notification_resource.read_bytes()).hexdigest()
+        if notification_resource_sha256 != WINDOWS_APP_RUNTIME_INSIGHTS_RESOURCE_SHA256:
+            fail(
+                errors,
+                "Windows App SDK notification resource SHA-256 does not match the audited "
+                f"runtime file: {notification_resource_sha256}",
+            )
+
     package_props = root / "Directory.Packages.props"
     package_text = read_text(package_props) if package_props.is_file() else ""
     if "ManagePackageVersionsCentrally" not in package_text:
@@ -162,6 +242,14 @@ def audit(root: Path) -> tuple[dict[str, object], list[str]]:
         "testAttributeCount": fact_count,
         "sourceMarkerIssues": source_issues,
         "absolutePathIssues": absolute_path_issues,
+        "requiredAutomationIds": {
+            file_name: sorted(ids) for file_name, ids in REQUIRED_AUTOMATION_IDS.items()
+        },
+        "windowsAppRuntimeInsightsResource": {
+            "path": WINDOWS_APP_RUNTIME_INSIGHTS_RESOURCE,
+            "sha256": notification_resource_sha256,
+            "expectedSha256": WINDOWS_APP_RUNTIME_INSIGHTS_RESOURCE_SHA256,
+        },
         "errors": errors,
     }
     return result, errors
