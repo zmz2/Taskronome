@@ -30,6 +30,10 @@ The published `Taskronome.exe --smoke-test` creates a temporary isolated data di
 
 The smoke test does not claim that a human saw the notification or assessed visual quality.
 
+### Focused responsive layout check
+
+`scripts/windows-interactive-acceptance.ps1 -WindowLayoutOnly` is the narrow-scope layout regression check. It runs the production executable with an isolated fixture containing long Chinese/English task text and an event, then measures 400×300, 480×360, 640×480, and 1040×720 WPF DIP sizes across the Tasks, Running, Statistics, and Settings tabs. At each size it checks top/middle/bottom scroll positions, UIA visibility/readability, horizontal containment, and screenshot evidence. The harness converts logical DIP sizes using the current `GetDpiForWindow` scale, so high-DPI machines are tested against the same logical minimum.
+
 ## One-command gate
 
 ```powershell

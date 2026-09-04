@@ -14,6 +14,7 @@ Taskronome 是一款面向 Windows 10/11 的桌面时间片轮转应用。它让
 - 默认置顶，可最小化到托盘；支持单实例、通知中心提醒、系统提示音和任务栏闪烁回退。
 - 本地保存任务、检查点、工作段和轮转事件；异常退出后保守恢复为系统暂停。
 - 提供今日/7 天/30 天/全部统计和 UTF-8 CSV 导出。
+- 主窗口支持缩放到 400×300 DIP；窄窗口会自动换行并通过页面滚动保留任务表、统计、设置和底部操作，不会把内容挤出窗口。
 - 不含账号、云同步、联网统计、广告或遥测。
 
 ## 系统要求
@@ -32,6 +33,8 @@ Taskronome 是一款面向 Windows 10/11 的桌面时间片轮转应用。它让
 6. 临时离开时可主动暂停；若未确认或系统锁屏/睡眠，应用会自动安全暂停。
 
 快捷键：`Enter` 确认任务、`Space` 暂停/恢复、`Ctrl+N` 新建任务、`Ctrl+Shift+T` 切换置顶。文本输入期间不会拦截 Enter 或 Space。
+
+窗口大小：主窗口的最小逻辑尺寸为 400×300 DIP（WPF 的设备无关像素）；在 125% 或 150% 等显示缩放下，Win32 物理像素会按系统 DPI 等比例增加。任务、统计和事件表的文字会在窄列中换行，页面内容在高度不足时使用竖向滚动；只读数据路径也会换行显示。
 
 ## 从源码验证
 
@@ -60,6 +63,17 @@ pwsh -NoProfile -File .\scripts\windows-interactive-acceptance.ps1 `
 ```
 
 该验收脚本为隔离数据目录启动真实生产程序，通过 `System.Windows.Automation` 的 AutomationId 和控件 pattern 完成可自动化检查，并生成 JSON、Markdown、窗口截图、日志、数据快照、SHA-256 清单和证据 ZIP。通知中心、托盘溢出区、锁屏、睡眠、显示缩放和高对比度等需要当前交互桌面或操作者配合的检查，只有在实际执行并留下系统证据后才记为 Pass；确实缺少硬件或权限时记为带理由的 N/A。
+
+仅验证本次窗口自适配（不执行轮转、通知、托盘和中断等旧功能流程）可使用：
+
+```powershell
+pwsh -NoProfile -File .\scripts\windows-interactive-acceptance.ps1 `
+  -AppPath .\artifacts\layout-publish\Taskronome.exe `
+  -AcceptanceRoot .\artifacts\window-layout-acceptance `
+  -WindowLayoutOnly
+```
+
+窗口专测按逻辑尺寸检查 400×300、480×360、640×480 和默认 1040×720；测试会根据当前窗口 DPI 将目标尺寸换算为 Win32 物理像素，并在每个尺寸下检查四个页面的顶部、中部和底部内容、滚动可达性、UIA 可读文本和窗口边界。
 
 构建便携包及按用户安装器：
 

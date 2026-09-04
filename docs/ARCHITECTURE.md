@@ -24,6 +24,7 @@ Core is directly unit-tested with a fake monotonic clock. This allows exact chec
 The App assembly targets `net10.0-windows10.0.19041.0` with WPF. It contains:
 
 - WPF planning, running, statistics and settings views;
+- `ResponsiveContentHost`, which constrains the measurement width of vertically scrollable pages when WPF supplies an infinite horizontal measure, then stretches the content back to the current viewport;
 - `MainWindowViewModel`, which translates Core state into UI properties;
 - a 250 ms display/pulse timer and a two-second durable checkpoint cadence;
 - Windows App SDK app notifications;

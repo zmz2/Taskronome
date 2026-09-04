@@ -101,6 +101,7 @@
         <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
         <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
         <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="MinWidth" Value="0" />
         <Setter Property="GridLinesVisibility" Value="Horizontal" />
         <Setter Property="HorizontalGridLinesBrush" Value="{StaticResource LineBrush}" />
         <Setter Property="HeadersVisibility" Value="Column" />
@@ -110,7 +111,25 @@
         <Setter Property="CanUserReorderColumns" Value="False" />
         <Setter Property="CanUserResizeRows" Value="False" />
         <Setter Property="IsReadOnly" Value="True" />
-        <Setter Property="RowHeight" Value="42" />
+        <Setter Property="MinRowHeight" Value="42" />
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Auto" />
+    </Style>
+
+    <Style TargetType="DataGridColumnHeader">
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="ContentTemplate">
+            <Setter.Value>
+                <DataTemplate>
+                    <TextBlock Text="{Binding}" TextAlignment="Center" TextWrapping="Wrap" />
+                </DataTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="WrappedDataGridText" TargetType="TextBlock">
+        <Setter Property="TextWrapping" Value="Wrap" />
+        <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
 
     <Style x:Key="CardBorder" TargetType="Border">
@@ -118,11 +137,11 @@
         <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="12" />
-        <Setter Property="Padding" Value="20" />
+        <Setter Property="Padding" Value="16" />
     </Style>
 
     <Style TargetType="TabItem">
-        <Setter Property="Padding" Value="18,10" />
+        <Setter Property="Padding" Value="14,8" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="FontWeight" Value="SemiBold" />
     </Style>

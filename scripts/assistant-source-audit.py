@@ -32,6 +32,7 @@ REQUIRED_AUTOMATION_IDS = {
         "RunningTab",
         "StatisticsTab",
         "SettingsTab",
+        "TasksContent",
         "TaskGrid",
         "NewTaskButton",
         "EditTaskButton",
@@ -42,6 +43,7 @@ REQUIRED_AUTOMATION_IDS = {
         "ReopenTaskButton",
         "ResetCompletionButton",
         "StartRotationButton",
+        "RunningContent",
         "CurrentTaskText",
         "RemainingText",
         "ConfirmationPanel",
@@ -53,11 +55,19 @@ REQUIRED_AUTOMATION_IDS = {
         "StopButton",
         "AbsentPausePanel",
         "SystemPausePanel",
+        "SettingsContent",
+        "DataDirectoryTextBox",
+        "PrivacyTextBlock",
+        "KeyboardTextBlock",
         "AlwaysOnTopCheckBox",
         "PlaySoundCheckBox",
         "ShowNotificationCheckBox",
         "MinimizeToTrayCheckBox",
         "TestNotificationButton",
+        "StatisticsContent",
+        "StatisticsGrid",
+        "EventsGrid",
+        "StatisticsScopeLabel",
         "StatisticsScopeComboBox",
         "ExportCsvButton",
     },
@@ -210,6 +220,17 @@ def audit(root: Path) -> tuple[dict[str, object], list[str]]:
         present_ids = set(re.findall(r'AutomationProperties\.AutomationId\s*=\s*"([^"]+)"', text))
         for automation_id in sorted(required_ids - present_ids):
             fail(errors, f"required AutomationId is missing in src/Taskronome.App/{file_name}: {automation_id}")
+
+    main_window_text = read_text(root / "src/Taskronome.App/MainWindow.xaml")
+    if not re.search(r'\bMinWidth\s*=\s*"400"', main_window_text):
+        fail(errors, "MainWindow.xaml must declare MinWidth=400 for the supported compact layout")
+    if not re.search(r'\bMinHeight\s*=\s*"300"', main_window_text):
+        fail(errors, "MainWindow.xaml must declare MinHeight=300 for the supported compact layout")
+    window_services_text = read_text(root / "src/Taskronome.App/Services/WindowServices.cs")
+    if not re.search(r'MinimumWidth\s*=\s*400', window_services_text):
+        fail(errors, "WindowPlacementService must clamp persisted width at 400")
+    if not re.search(r'MinimumHeight\s*=\s*300', window_services_text):
+        fail(errors, "WindowPlacementService must clamp persisted height at 300")
 
     notification_resource = root / WINDOWS_APP_RUNTIME_INSIGHTS_RESOURCE
     notification_resource_sha256: str | None = None

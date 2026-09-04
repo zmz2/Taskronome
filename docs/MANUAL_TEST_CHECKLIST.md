@@ -69,6 +69,8 @@ Use `Pass`, `Fail`, or `N/A` and include a screenshot or log path for every non-
 - [ ] `Ctrl+N`, `Ctrl+Shift+T`, Enter, and Space work only in the appropriate state; Space in a text field does not pause.
 - [ ] Move/maximize/close/reopen across monitors; after disconnecting a monitor the window returns to a visible work area.
 - [ ] At 100%, 125%, 150%, and 200% scaling, controls, countdown, and dialogs remain usable.
+- [ ] Resize the main window to the minimum 400×300 DIP, then 480×360, 640×480, and 1040×720 DIP; all four tabs keep their leading controls visible, their trailing controls reachable by vertical scrolling, and no text crosses the window edge.
+- [ ] At the minimum size, verify long Chinese and English task names, notes, statistics/events, the data path, feedback text, and keyboard help wrap instead of being clipped or ellipsized; data tables may use their own horizontal scrollbar when needed.
 - [ ] Keyboard-only navigation has visible focus; long Chinese names/notes and the minimum window size do not break layout.
 - [ ] High-contrast mode remains legible for the core actions.
 

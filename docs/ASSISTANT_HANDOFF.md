@@ -6,10 +6,12 @@ This document describes the final implementation surface for the Windows handoff
 
 - `src/Taskronome.Core` is a WPF-free `net10.0` assembly containing the rotation state machine, monotonic-clock accounting, validation, CSV formatting, statistics, and atomic JSON persistence.
 - `src/Taskronome.App` is a `net10.0-windows10.0.19041.0` WPF application with Windows App SDK notifications, taskbar/sound/tray fallback, single-instance activation, window placement, and power/session interruption handling.
+- `MainWindow` supports a 400×300 logical-DIP minimum; `ResponsiveContentHost` and wrapped data-grid cells keep compact pages readable while preserving vertical scroll reachability.
 - `tests/Taskronome.Core.Tests` contains deterministic fake-clock tests for the state machine and persistence boundaries.
 - `tests/Taskronome.ScenarioRunner` is a real-time two-task acceptance scenario using 2-second and 3-second slices.
 - `scripts/bootstrap-and-verify.ps1` is the single local gate. With `-Package` it also creates the portable ZIP, Inno Setup installer, manifest, and checksums.
 - `scripts/windows-interactive-acceptance.ps1` is the reusable production-mode Windows UI Automation/watchdog harness. It targets a supplied CI package executable, uses an isolated data directory, and emits structured manual evidence without a production backdoor.
+- Pass `-WindowLayoutOnly` to run only the focused four-size/four-tab responsive layout matrix without repeating the rotation, notification, tray, or interruption flows.
 - `.github/workflows/ci.yml` runs the same gate on Windows pull requests and development branches. `.github/workflows/release.yml` packages versioned tags.
 
 ## Non-negotiable invariants

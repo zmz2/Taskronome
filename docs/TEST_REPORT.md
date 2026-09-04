@@ -27,6 +27,14 @@ The following commands were run from D:\VibeCodingTools\Taskronome with the loca
 
 The standalone command output is retained in [root-final-commands.log](../artifacts/root-final-commands.log). The complete unified gate output is retained by the verification artifacts and the terminal run that produced [verification-summary.json](../artifacts/verification-summary.json).
 
+## Responsive layout verification for this change
+
+The focused Windows layout command was run against a self-contained local `win-x64` publish of the current worktree:
+
+    pwsh -NoProfile -File .\scripts\windows-interactive-acceptance.ps1 -AppPath .\artifacts\layout-publish\Taskronome.exe -AcceptanceRoot .\artifacts\window-layout-acceptance -WindowLayoutOnly
+
+It completed 48/48 checks with 0 failures: 400×300, 480×360, 640×480, and 1040×720 logical WPF DIP at the Tasks, Running, Statistics, and Settings tabs, with top/middle/bottom scroll positions for every tab. The fixture included long Chinese and English task names/notes, a feedback string, a data path, and a statistics event. The check verified DPI-aware physical sizing, readable UI Automation text, visible table descendants, horizontal containment inside the main HWND, and vertical scroll reachability; the corresponding screenshots were inspected for the 400×300 DIP case. The run-specific JSON, Markdown, screenshots, logs, data snapshots, checksum file, and evidence ZIP remain under the local `artifacts/window-layout-acceptance-*` output and are intentionally not copied into this static report, just as CI run IDs are not pinned here.
+
 ## Automated results
 
 | Gate | Result | Actual evidence |
@@ -40,6 +48,7 @@ The standalone command output is retained in [root-final-commands.log](../artifa
 | Core branch coverage | Passed | 81.84%, threshold 75%; coverage.cobertura.xml below artifacts/test-results/ |
 | Real 2s/3s scenario | Passed | 9,842.9 ms wall elapsed, 5,687.4 ms recorded work, 6 segments, 20 events; [scenario-result.json](../artifacts/scenario/scenario-result.json) |
 | Published UI smoke | Passed | Actual WPF self-contained EXE started and exited with code 0; smoke result passed; [summary.json](../artifacts/ui-smoke/summary.json) |
+| Responsive window layout-only matrix | Passed | 48/48 focused checks passed across four logical sizes and four tabs; run-specific screenshots and structured evidence are kept under the local `artifacts/window-layout-acceptance-*` output |
 | Single-instance smoke | Passed | First process exit 0, second process exit 0, second launch signalled the first instance; [summary.json](../artifacts/ui-smoke/summary.json) |
 | Portable ZIP E2E | Passed | ZIP was extracted to a fresh directory and the extracted self-contained EXE returned 0 with a passing smoke result; [portable-e2e-result.json](../artifacts/portable-e2e-3bf9e8c7b1d44dbd9e35ff6c4a3cf4b4/portable-e2e-result.json) |
 | GitHub Actions Windows gate | Passed in the prior validation snapshot | The exact current CI run, uploaded artifact, and its checksum file are recorded in the final PR comment; this committed report intentionally avoids embedding a run ID so documentation commits do not create a run-ID chase |

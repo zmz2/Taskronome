@@ -99,6 +99,9 @@ public static class WindowActivationService
 
 public static class WindowPlacementService
 {
+    public const double MinimumWidth = 400;
+    public const double MinimumHeight = 300;
+
     private const double MinimumVisibleWidth = 160;
     private const double MinimumVisibleHeight = 80;
 
@@ -107,10 +110,10 @@ public static class WindowPlacementService
         ArgumentNullException.ThrowIfNull(window);
         ArgumentNullException.ThrowIfNull(placement);
 
-        var width = IsFinitePositive(placement.Width) ? Math.Max(760, placement.Width) : 1040;
-        var height = IsFinitePositive(placement.Height) ? Math.Max(560, placement.Height) : 720;
-        window.Width = Math.Min(width, Math.Max(760, SystemParameters.VirtualScreenWidth));
-        window.Height = Math.Min(height, Math.Max(560, SystemParameters.VirtualScreenHeight));
+        var width = IsFinitePositive(placement.Width) ? Math.Max(MinimumWidth, placement.Width) : 1040;
+        var height = IsFinitePositive(placement.Height) ? Math.Max(MinimumHeight, placement.Height) : 720;
+        window.Width = Math.Min(width, Math.Max(MinimumWidth, SystemParameters.VirtualScreenWidth));
+        window.Height = Math.Min(height, Math.Max(MinimumHeight, SystemParameters.VirtualScreenHeight));
 
         if (double.IsFinite(placement.Left) && double.IsFinite(placement.Top))
         {

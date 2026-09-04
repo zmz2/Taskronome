@@ -19,7 +19,9 @@ param(
 
     [switch]$OperatorAssistance,
 
-    [switch]$PerformPhysicalOperations
+    [switch]$PerformPhysicalOperations,
+
+    [switch]$WindowLayoutOnly
 )
 
 <#
@@ -173,6 +175,9 @@ public static class TaskronomeAcceptanceNative
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int width, int height, uint flags);
@@ -1583,6 +1588,12 @@ function Save-WindowScreenshot {
         $bitmap.Dispose()
     }
 
+    # PrintWindow can leave a WPF window minimized on some Windows desktop
+    # configurations. Restore it before the next UIA action so the screenshot
+    # helper cannot make a subsequent layout assertion inspect the minimized
+    # caption rectangle instead of the application content.
+    Restore-MainWindowIfMinimized
+
     return Get-RelativePath $path
 }
 
@@ -1852,6 +1863,369 @@ function Assert-CoreLayout {
     }
 
     Select-Tab 'TasksTab'
+}
+
+function Get-MainWindowRect {
+    if ($null -eq $script:window) {
+        throw 'The Taskronome main window is not available.'
+    }
+
+    $handle = [IntPtr]$script:window.Current.NativeWindowHandle
+    $rect = [TaskronomeAcceptanceNative+Rect]::new()
+    if (-not [TaskronomeAcceptanceNative]::GetWindowRect($handle, [ref]$rect)) {
+        throw "GetWindowRect failed with Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())."
+    }
+
+    return [pscustomobject][ordered]@{
+        Left = $rect.Left
+        Top = $rect.Top
+        Right = $rect.Right
+        Bottom = $rect.Bottom
+        Width = $rect.Right - $rect.Left
+        Height = $rect.Bottom - $rect.Top
+    }
+}
+
+function Get-MainWindowDpiScale {
+    if ($null -eq $script:window) {
+        throw 'The Taskronome main window is not available.'
+    }
+
+    $dpi = [TaskronomeAcceptanceNative]::GetDpiForWindow([IntPtr]$script:window.Current.NativeWindowHandle)
+    Assert-True ($dpi -ge 96) "Window DPI was invalid: $dpi."
+    return [double]$dpi / 96
+}
+
+function Convert-LogicalSizeToPhysical {
+    param(
+        [Parameter(Mandatory = $true)][double]$LogicalWidth,
+        [Parameter(Mandatory = $true)][double]$LogicalHeight,
+        [Parameter(Mandatory = $true)][double]$DpiScale
+    )
+
+    return [pscustomobject][ordered]@{
+        Width = [int][Math]::Ceiling($LogicalWidth * $DpiScale)
+        Height = [int][Math]::Ceiling($LogicalHeight * $DpiScale)
+    }
+}
+
+function Set-MainWindowSize {
+    param(
+        [Parameter(Mandatory = $true)][int]$Width,
+        [Parameter(Mandatory = $true)][int]$Height
+    )
+
+    Restore-MainWindowIfMinimized
+    $before = Get-MainWindowRect
+    $handle = [IntPtr]$script:window.Current.NativeWindowHandle
+    $result = [TaskronomeAcceptanceNative]::SetWindowPos(
+        $handle,
+        [IntPtr]::Zero,
+        $before.Left,
+        $before.Top,
+        $Width,
+        $Height,
+        0x0004 -bor 0x0010)
+    Assert-True $result "Unable to resize the main window to ${Width}x${Height}."
+    Restore-MainWindowIfMinimized
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 150
+        $current = Get-MainWindowRect
+        if ($current.Width -ge ($Width - 4) -and $current.Width -le ($Width + 8) -and
+            $current.Height -ge ($Height - 4) -and $current.Height -le ($Height + 8)) {
+            break
+        }
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    if (-not ($current.Width -ge ($Width - 4) -and $current.Width -le ($Width + 8))) {
+        $diagnostics = foreach ($id in @('MainTabs', 'TasksContent', 'TaskGrid', 'NewTaskButton', 'EditTaskButton', 'DeleteTaskButton', 'MoveUpButton', 'MoveDownButton', 'ToggleEnabledButton', 'StartRotationButton')) {
+            $element = Find-ElementByIdAnyWindow $id -TimeoutSeconds 1 -Optional
+            if ($null -eq $element) {
+                "${id}=missing"
+            }
+            else {
+                $bounds = $element.Current.BoundingRectangle
+                "${id}=$([int]$bounds.Width)x$([int]$bounds.Height)@$([int]$bounds.Left),$([int]$bounds.Top)"
+            }
+        }
+        $wideElements = foreach ($element in $script:window.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)) {
+            try {
+                $bounds = $element.Current.BoundingRectangle
+                if ($bounds.Width -ge 450) {
+                    $id = [string]$element.Current.AutomationId
+                    $name = [string]$element.Current.Name
+                    "${id}/${name}=$([int]$bounds.Width)x$([int]$bounds.Height)"
+                }
+            }
+            catch {
+            }
+        }
+        throw "Main window width did not settle at ${Width}px: $($current.Width) (before resize $($before.Width)). Layout diagnostics: $($diagnostics -join '; '). Wide UIA elements: $($wideElements -join '; ')"
+    }
+    Assert-True ($current.Height -ge ($Height - 4) -and $current.Height -le ($Height + 8)) "Main window height did not settle at ${Height}px: $($current.Height)."
+    $script:window = Get-LiveMainWindowElement
+    return $current
+}
+
+function Restore-MainWindowIfMinimized {
+    if ($null -eq $script:window) {
+        throw 'The Taskronome main window is not available.'
+    }
+
+    try {
+        $handle = [IntPtr]$script:window.Current.NativeWindowHandle
+        $pattern = [System.Windows.Automation.WindowPattern]$script:window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+        $rect = [TaskronomeAcceptanceNative+Rect]::new()
+        $hasRect = [TaskronomeAcceptanceNative]::GetWindowRect($handle, [ref]$rect)
+        $nativeMinimized = $hasRect -and (($rect.Right - $rect.Left) -lt 300 -or ($rect.Bottom - $rect.Top) -lt 200)
+        if ($pattern.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized -or $nativeMinimized) {
+            [void][TaskronomeAcceptanceNative]::ShowWindow($handle, 9)
+            $pattern.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal)
+            Start-Sleep -Milliseconds 250
+            $script:window = Get-LiveMainWindowElement
+        }
+    }
+    catch [System.Windows.Automation.ElementNotAvailableException] {
+        $script:window = Get-LiveMainWindowElement
+    }
+}
+
+function Set-ContentScrollPercent {
+    param(
+        [Parameter(Mandatory = $true)][string]$AutomationId,
+        [Parameter(Mandatory = $true)][double]$VerticalPercent
+    )
+
+    $viewer = Find-ElementByIdAnyWindow $AutomationId
+    try {
+        $pattern = [System.Windows.Automation.ScrollPattern]$viewer.GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)
+    }
+    catch {
+        throw "Scrollable content '$AutomationId' did not expose ScrollPattern: $($_.Exception.Message)"
+    }
+
+    $scrollable = [bool]$pattern.Current.VerticallyScrollable
+    if ($scrollable) {
+        $pattern.SetScrollPercent(-1, $VerticalPercent)
+        Start-Sleep -Milliseconds 300
+    }
+
+    return [pscustomobject][ordered]@{
+        AutomationId = $AutomationId
+        VerticallyScrollable = $scrollable
+        VerticalPercent = [double]$pattern.Current.VerticalScrollPercent
+    }
+}
+
+function Assert-ElementVisibleInsideWindow {
+    param(
+        [Parameter(Mandatory = $true)][string]$AutomationId,
+        [Parameter(Mandatory = $true)]$WindowRect,
+        [switch]$RequireReadableText,
+        [switch]$AllowVerticalOverflow
+    )
+
+    $element = Find-ElementByIdAnyWindow $AutomationId
+    $bounds = $element.Current.BoundingRectangle
+    Assert-True (-not [bool]$element.Current.IsOffscreen) "$AutomationId was offscreen at the current scroll position."
+    Assert-True ($bounds.Width -gt 0 -and $bounds.Height -gt 0) "$AutomationId had no visible bounds."
+    $horizontallyInside = $bounds.Left -ge ($WindowRect.Left - 2) -and
+        $bounds.Right -le ($WindowRect.Right + 2)
+    if ($AllowVerticalOverflow) {
+        $verticallyReachable = $bounds.Bottom -gt ($WindowRect.Top - 2) -and
+            $bounds.Top -lt ($WindowRect.Bottom + 2)
+        Assert-True ($horizontallyInside -and $verticallyReachable) "$AutomationId was not reachable inside the main window bounds: $bounds versus $WindowRect."
+    }
+    else {
+        Assert-True ($horizontallyInside -and
+            $bounds.Top -ge ($WindowRect.Top - 2) -and
+            $bounds.Bottom -le ($WindowRect.Bottom + 2)) "$AutomationId was clipped by the main window bounds: $bounds versus $WindowRect."
+    }
+
+    if ($RequireReadableText) {
+        $text = Get-ElementText $element
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            foreach ($descendant in $element.FindAll(
+                    [System.Windows.Automation.TreeScope]::Descendants,
+                    [System.Windows.Automation.Condition]::TrueCondition)) {
+                $text = Get-ElementText $descendant
+                if (-not [string]::IsNullOrWhiteSpace($text)) {
+                    break
+                }
+            }
+        }
+        Assert-True (-not [string]::IsNullOrWhiteSpace($text)) "$AutomationId did not expose readable text after layout."
+    }
+    return "${AutomationId}:$([int]$bounds.Width)x$([int]$bounds.Height)"
+}
+
+function Assert-ResponsiveTabLayout {
+    param(
+        [Parameter(Mandatory = $true)][string]$TabId,
+        [Parameter(Mandatory = $true)][string]$ContentId,
+        [Parameter(Mandatory = $true)][string[]]$ElementIds,
+        [Parameter(Mandatory = $true)][double]$ScrollPercent,
+        [string[]]$ReadableElementIds = @(),
+        [string[]]$AllowVerticalOverflowIds = @()
+    )
+
+    Select-Tab $TabId
+    $scroll = Set-ContentScrollPercent $ContentId $ScrollPercent
+    $windowRect = Get-MainWindowRect
+    $measurements = [System.Collections.Generic.List[string]]::new()
+    foreach ($id in $ElementIds) {
+        $parameters = @{}
+        if ($ReadableElementIds -contains $id) {
+            $parameters.RequireReadableText = $true
+        }
+        if ($AllowVerticalOverflowIds -contains $id) {
+            $parameters.AllowVerticalOverflow = $true
+        }
+        [void]$measurements.Add((Assert-ElementVisibleInsideWindow $id $windowRect @parameters))
+    }
+
+    return "$TabId/$ContentId scrollable=$($scroll.VerticallyScrollable) percent=$([int]$scroll.VerticalPercent): $($measurements -join ', ')"
+}
+
+function Write-WindowLayoutFixture {
+    $now = [DateTimeOffset]::UtcNow
+    $firstTaskId = [Guid]::NewGuid()
+    $secondTaskId = [Guid]::NewGuid()
+    $fixture = [ordered]@{
+        SchemaVersion = 1
+        Settings = [ordered]@{
+            AlwaysOnTop = $false
+            PlaySound = $false
+            MinimizeToTrayOnClose = $true
+            ShowNotification = $false
+            StatisticsScope = 'Today'
+        }
+        WindowPlacement = [ordered]@{
+            Left = 100
+            Top = 100
+            Width = 1040
+            Height = 720
+            IsMaximized = $false
+        }
+        Tasks = @(
+            [ordered]@{
+                Id = $firstTaskId
+                Name = '准备中文窗口自适配验收与长标题回归检查'
+                Notes = '这是用于窄窗口验收的较长备注：文本应当换行显示，不能因为表格列宽或窗口尺寸变化而被截断。'
+                SliceDuration = '00:25:00'
+                Order = 0
+                Enabled = $true
+                Completed = $false
+                CreatedAtUtc = $now
+                UpdatedAtUtc = $now
+            }
+            [ordered]@{
+                Id = $secondTaskId
+                Name = 'Review responsive layout and accessible text'
+                Notes = 'Long notes remain readable in the wrapped data grid.'
+                SliceDuration = '00:10:00'
+                Order = 1
+                Enabled = $true
+                Completed = $false
+                CreatedAtUtc = $now
+                UpdatedAtUtc = $now
+            })
+        WorkSegments = @()
+        Events = @(
+            [ordered]@{
+                Id = [Guid]::NewGuid()
+                OccurredAtUtc = $now
+                Type = 'RotationStarted'
+                TaskId = $firstTaskId
+                TaskName = '准备中文窗口自适配验收与长标题回归检查'
+                Detail = '窄窗口文字换行验收样本'
+            })
+        Checkpoint = $null
+    }
+    $json = $fixture | ConvertTo-Json -Depth 10
+    Set-Content -LiteralPath (Join-Path $script:dataDir 'data.json') -Value $json -Encoding UTF8
+}
+
+function Run-WindowLayoutFlow {
+    $originalRect = Get-MainWindowRect
+    $dpiScale = Get-MainWindowDpiScale
+    $cases = @(
+        [pscustomobject]@{ Name = '400x300'; LogicalWidth = 400; LogicalHeight = 300 },
+        [pscustomobject]@{ Name = '480x360'; LogicalWidth = 480; LogicalHeight = 360 },
+        [pscustomobject]@{ Name = '640x480'; LogicalWidth = 640; LogicalHeight = 480 },
+        [pscustomobject]@{ Name = '1040x720'; LogicalWidth = 1040; LogicalHeight = 720 })
+    $tabs = @(
+        [pscustomobject]@{
+            Name = 'tasks'
+            TabId = 'TasksTab'
+            ContentId = 'TasksContent'
+            Positions = @(
+                [pscustomobject]@{ Name = 'top'; ScrollPercent = 0; ElementIds = @('NewTaskButton'); ReadableElementIds = @('NewTaskButton') },
+                [pscustomobject]@{ Name = 'middle'; ScrollPercent = 50; ElementIds = @('TaskGrid'); ReadableElementIds = @('TaskGrid'); AllowVerticalOverflowIds = @('TaskGrid') },
+                [pscustomobject]@{ Name = 'bottom'; ScrollPercent = 100; ElementIds = @('StartRotationButton'); ReadableElementIds = @('StartRotationButton') })
+        },
+        [pscustomobject]@{
+            Name = 'running'
+            TabId = 'RunningTab'
+            ContentId = 'RunningContent'
+            Positions = @(
+                [pscustomobject]@{ Name = 'top'; ScrollPercent = 0; ElementIds = @('CurrentTaskText'); ReadableElementIds = @() },
+                [pscustomobject]@{ Name = 'middle'; ScrollPercent = 25; ElementIds = @('RemainingText'); ReadableElementIds = @('RemainingText') },
+                [pscustomobject]@{ Name = 'bottom'; ScrollPercent = 100; ElementIds = @('StopButton'); ReadableElementIds = @('StopButton') })
+        },
+        [pscustomobject]@{
+            Name = 'statistics'
+            TabId = 'StatisticsTab'
+            ContentId = 'StatisticsContent'
+            Positions = @(
+                [pscustomobject]@{ Name = 'top'; ScrollPercent = 0; ElementIds = @('StatisticsScopeLabel', 'StatisticsScopeComboBox'); ReadableElementIds = @('StatisticsScopeLabel') },
+                [pscustomobject]@{ Name = 'middle'; ScrollPercent = 50; ElementIds = @('StatisticsGrid'); ReadableElementIds = @('StatisticsGrid'); AllowVerticalOverflowIds = @('StatisticsGrid') },
+                [pscustomobject]@{ Name = 'bottom'; ScrollPercent = 100; ElementIds = @('EventsGrid'); ReadableElementIds = @('EventsGrid'); AllowVerticalOverflowIds = @('EventsGrid') })
+        },
+        [pscustomobject]@{
+            Name = 'settings'
+            TabId = 'SettingsTab'
+            ContentId = 'SettingsContent'
+            Positions = @(
+                [pscustomobject]@{ Name = 'top'; ScrollPercent = 0; ElementIds = @('AlwaysOnTopCheckBox'); ReadableElementIds = @('AlwaysOnTopCheckBox') },
+                [pscustomobject]@{ Name = 'middle'; ScrollPercent = 50; ElementIds = @('DataDirectoryTextBox'); ReadableElementIds = @('DataDirectoryTextBox') },
+                [pscustomobject]@{ Name = 'bottom'; ScrollPercent = 100; ElementIds = @('KeyboardTextBlock'); ReadableElementIds = @('KeyboardTextBlock') })
+        })
+
+    try {
+        foreach ($case in $cases) {
+            $physicalSize = Convert-LogicalSizeToPhysical $case.LogicalWidth $case.LogicalHeight $dpiScale
+            $size = Set-MainWindowSize $physicalSize.Width $physicalSize.Height
+            foreach ($tab in $tabs) {
+                foreach ($position in $tab.Positions) {
+                    $testPrefix = "window-layout-$($case.Name)-$($tab.Name)-$($position.Name)"
+                    $allowVerticalOverflowIds = if ($position.PSObject.Properties.Name -contains 'AllowVerticalOverflowIds') {
+                        @($position.AllowVerticalOverflowIds)
+                    }
+                    else {
+                        @()
+                    }
+                    Invoke-Recorded -TestId $testPrefix -Category 'Window/Layout' -Expected "At logical size $($case.Name) DIP (physical $($physicalSize.Width)x$($physicalSize.Height)), the $($tab.Name) tab keeps its $($position.Name) content fully visible, readable, and reachable by vertical scrolling." -Action {
+                        Assert-ResponsiveTabLayout $tab.TabId $tab.ContentId $position.ElementIds $position.ScrollPercent $position.ReadableElementIds $allowVerticalOverflowIds
+                    } -ScreenshotName $testPrefix -SnapshotFiles | Out-Null
+                }
+            }
+        }
+    }
+    finally {
+        try {
+            [void](Set-MainWindowSize ([int]$originalRect.Width) ([int]$originalRect.Height))
+        }
+        catch {
+            Write-Warning "Unable to restore the original main window size: $($_.Exception.Message)"
+        }
+    }
+
+    return $true
 }
 
 function Invoke-Recorded {
@@ -3292,20 +3666,30 @@ function Run-DpiAndEnvironmentFlow {
         $dpi = [TaskronomeAcceptanceNative]::GetDpiForWindow($handle)
         Assert-True ($dpi -ge 96) "Window DPI was invalid: $dpi."
         $originalRect = $script:window.Current.BoundingRectangle
+        $minimumPhysicalSize = Convert-LogicalSizeToPhysical 400 300 ([double]$dpi / 96)
         $minimumResult = [TaskronomeAcceptanceNative]::SetWindowPos(
             $handle,
             [IntPtr]::Zero,
             [int]$originalRect.Left,
             [int]$originalRect.Top,
-            760,
-            560,
+            $minimumPhysicalSize.Width,
+            $minimumPhysicalSize.Height,
             0x0004 -bor 0x0010)
         Assert-True $minimumResult 'Unable to place the window at its declared minimum size.'
         try {
             Start-Sleep -Milliseconds 500
             $minimumRect = $script:window.Current.BoundingRectangle
-            Assert-True ($minimumRect.Width -ge 750 -and $minimumRect.Height -ge 550) 'The minimum-size window was smaller than the declared bounds.'
-            Assert-CoreLayout
+            Assert-True ($minimumRect.Width -ge ($minimumPhysicalSize.Width - 4) -and $minimumRect.Width -le ($minimumPhysicalSize.Width + 8) -and
+                $minimumRect.Height -ge ($minimumPhysicalSize.Height - 4) -and $minimumRect.Height -le ($minimumPhysicalSize.Height + 8)) "The minimum-size window did not settle near the declared 400x300 DIP bounds ($($minimumPhysicalSize.Width)x$($minimumPhysicalSize.Height) physical pixels)."
+            $script:window = Get-LiveMainWindowElement
+            Select-Tab 'TasksTab'
+            foreach ($id in @('NewTaskButton', 'TaskGrid')) {
+                Assert-ElementVisibleInsideWindow $id (Get-MainWindowRect) | Out-Null
+            }
+            Select-Tab 'RunningTab'
+            foreach ($id in @('CurrentTaskText', 'RemainingText')) {
+                Assert-ElementVisibleInsideWindow $id (Get-MainWindowRect) | Out-Null
+            }
         }
         finally {
             [void][TaskronomeAcceptanceNative]::SetWindowPos(
@@ -3680,17 +4064,25 @@ try {
     }
 
     $script:originalEnvironment = Get-EnvironmentSnapshot
+    if ($WindowLayoutOnly) {
+        Write-WindowLayoutFixture
+    }
     Start-Taskronome
     $script:networkBefore = Get-NetworkSnapshot $script:process.Id
 
-    $tasks = Run-DataAndUiFlow
-    Run-RotationFlow $tasks | Out-Null
-    Run-NotificationFlow | Out-Null
-    Run-KeyboardTopmostAndSingleInstanceFlow | Out-Null
-    Run-TrayFlow | Out-Null
-    Run-InterruptionFlow | Out-Null
-    Run-PersistenceCsvAndCorruptionFlow | Out-Null
-    Run-DpiAndEnvironmentFlow | Out-Null
+    if ($WindowLayoutOnly) {
+        Run-WindowLayoutFlow | Out-Null
+    }
+    else {
+        $tasks = Run-DataAndUiFlow
+        Run-RotationFlow $tasks | Out-Null
+        Run-NotificationFlow | Out-Null
+        Run-KeyboardTopmostAndSingleInstanceFlow | Out-Null
+        Run-TrayFlow | Out-Null
+        Run-InterruptionFlow | Out-Null
+        Run-PersistenceCsvAndCorruptionFlow | Out-Null
+        Run-DpiAndEnvironmentFlow | Out-Null
+    }
 }
 catch {
     $exitCode = 1
