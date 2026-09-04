@@ -32,6 +32,8 @@ After a self-contained `win-x64` publish, `scripts/ui-smoke.ps1` launches the ac
 
 The smoke test does not certify that a person saw the window, notification center, tray icon, DPI layout, or power/session behavior. Those checks are recorded in [MANUAL_TEST_CHECKLIST.md](MANUAL_TEST_CHECKLIST.md) with evidence paths.
 
+For the final release candidate, run `scripts/windows-interactive-acceptance.ps1` against the executable extracted from the same successful CI package artifact. It launches production mode with an isolated data directory, uses `System.Windows.Automation`/Win32 evidence, keeps the PowerShell process as an interruption watchdog, and writes the JSON/Markdown/screenshot/log/data-snapshot/SHA-256/ZIP evidence set. No `--test-mode` or `--notification-dry-run` argument is permitted.
+
 ## Packaging checks
 
 `scripts/package.ps1` restores locked dependencies, publishes self-contained `win-x64`, excludes PDB files, creates the portable ZIP, invokes Inno Setup for the per-user installer, rejects development/user-data/PDB paths in the ZIP, and writes `SHA256SUMS.txt` plus `package-manifest.json`. For an official download, verify the file against the `SHA256SUMS.txt` uploaded by the same CI or Release workflow that produced it; local build hashes are not official release checksums.
@@ -42,4 +44,4 @@ The smoke test does not certify that a person saw the window, notification cente
 pwsh -NoProfile -File .\scripts\bootstrap-and-verify.ps1 -Package
 ```
 
-The command is the release gate. If a check is unavailable on the current machine, the run must fail or the manual report must explicitly say `Not run`; a CI result cannot stand in for a manual Windows observation.
+The command is the release gate. If a check is unavailable on the current machine, the run must fail or the manual report must explicitly say `N/A` with concrete hardware, permission, or session evidence; a CI result cannot stand in for a manual Windows observation. Release-blocking checks must never be left as `Not run`.

@@ -1,6 +1,7 @@
 <Window x:Class="Taskronome.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        AutomationProperties.AutomationId="MainWindow"
         Title="Taskronome"
         Width="1040"
         Height="720"
@@ -43,11 +44,19 @@
         </Border>
 
         <Border Grid.Row="1" Margin="24,12,24,0" Padding="12,8" CornerRadius="7" Background="#EEF2FF" BorderBrush="#D9E0FF" BorderThickness="1">
-            <TextBlock Text="{Binding FeedbackMessage}" TextWrapping="Wrap" Foreground="{StaticResource InkBrush}" />
+            <TextBlock Text="{Binding FeedbackMessage}"
+                       TextWrapping="Wrap"
+                       Foreground="{StaticResource InkBrush}"
+                       AutomationProperties.AutomationId="FeedbackMessage" />
         </Border>
 
-        <TabControl x:Name="MainTabs" Grid.Row="2" Margin="18,12,18,18" Background="Transparent" BorderThickness="0">
-            <TabItem Header="{DynamicResource TasksTab}">
+        <TabControl x:Name="MainTabs"
+                    Grid.Row="2"
+                    Margin="18,12,18,18"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    AutomationProperties.AutomationId="MainTabs">
+            <TabItem Header="{DynamicResource TasksTab}" AutomationProperties.AutomationId="TasksTab">
                 <Grid Margin="6,14,6,6">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -57,12 +66,12 @@
                     </Grid.RowDefinitions>
 
                     <WrapPanel Grid.Row="0" Margin="0,0,0,12">
-                        <Button Content="{DynamicResource NewTask}" Style="{StaticResource PrimaryButton}" IsEnabled="{Binding CanEditTasks}" Click="NewTaskButton_Click" />
-                        <Button Content="{DynamicResource EditTask}" IsEnabled="{Binding CanEditSelectedTask}" Click="EditTaskButton_Click" />
-                        <Button Content="{DynamicResource DeleteTask}" Style="{StaticResource DangerButton}" IsEnabled="{Binding CanEditSelectedTask}" Click="DeleteTaskButton_Click" />
-                        <Button Content="{DynamicResource MoveUp}" IsEnabled="{Binding CanEditSelectedTask}" Click="MoveUpButton_Click" />
-                        <Button Content="{DynamicResource MoveDown}" IsEnabled="{Binding CanEditSelectedTask}" Click="MoveDownButton_Click" />
-                        <Button Content="{DynamicResource ToggleEnabled}" IsEnabled="{Binding CanEditSelectedTask}" Click="ToggleEnabledButton_Click" />
+                        <Button Content="{DynamicResource NewTask}" Style="{StaticResource PrimaryButton}" IsEnabled="{Binding CanEditTasks}" Click="NewTaskButton_Click" AutomationProperties.AutomationId="NewTaskButton" />
+                        <Button Content="{DynamicResource EditTask}" IsEnabled="{Binding CanEditSelectedTask}" Click="EditTaskButton_Click" AutomationProperties.AutomationId="EditTaskButton" />
+                        <Button Content="{DynamicResource DeleteTask}" Style="{StaticResource DangerButton}" IsEnabled="{Binding CanEditSelectedTask}" Click="DeleteTaskButton_Click" AutomationProperties.AutomationId="DeleteTaskButton" />
+                        <Button Content="{DynamicResource MoveUp}" IsEnabled="{Binding CanEditSelectedTask}" Click="MoveUpButton_Click" AutomationProperties.AutomationId="MoveUpButton" />
+                        <Button Content="{DynamicResource MoveDown}" IsEnabled="{Binding CanEditSelectedTask}" Click="MoveDownButton_Click" AutomationProperties.AutomationId="MoveDownButton" />
+                        <Button Content="{DynamicResource ToggleEnabled}" IsEnabled="{Binding CanEditSelectedTask}" Click="ToggleEnabledButton_Click" AutomationProperties.AutomationId="ToggleEnabledButton" />
                     </WrapPanel>
 
                     <Grid Grid.Row="1" Margin="0,0,0,12">
@@ -75,8 +84,8 @@
                             <TextBlock Text="{Binding CycleDurationText}" FontWeight="Bold" Margin="8,0,0,0" />
                         </StackPanel>
                         <WrapPanel Grid.Column="1" HorizontalAlignment="Right">
-                            <Button Content="{DynamicResource ReopenTask}" IsEnabled="{Binding CanEditSelectedTask}" Click="ReopenTaskButton_Click" />
-                            <Button Content="{DynamicResource ResetCompletion}" IsEnabled="{Binding CanEditTasks}" Click="ResetCompletionButton_Click" />
+                            <Button Content="{DynamicResource ReopenTask}" IsEnabled="{Binding CanEditSelectedTask}" Click="ReopenTaskButton_Click" AutomationProperties.AutomationId="ReopenTaskButton" />
+                            <Button Content="{DynamicResource ResetCompletion}" IsEnabled="{Binding CanEditTasks}" Click="ResetCompletionButton_Click" AutomationProperties.AutomationId="ResetCompletionButton" />
                         </WrapPanel>
                     </Grid>
 
@@ -85,7 +94,8 @@
                               SelectedItem="{Binding SelectedTask, Mode=TwoWay}"
                               SelectionMode="Single"
                               SelectionUnit="FullRow"
-                              MouseDoubleClick="TaskGrid_MouseDoubleClick">
+                              MouseDoubleClick="TaskGrid_MouseDoubleClick"
+                              AutomationProperties.AutomationId="TaskGrid">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="#" Binding="{Binding Order}" Width="48" />
                             <DataGridTextColumn Header="{DynamicResource TaskName}" Binding="{Binding Name}" Width="2*" />
@@ -110,12 +120,13 @@
                                 Style="{StaticResource PrimaryButton}"
                                 Padding="24,11"
                                 IsEnabled="{Binding CanStart}"
-                                Click="StartRotationButton_Click" />
+                                Click="StartRotationButton_Click"
+                                AutomationProperties.AutomationId="StartRotationButton" />
                     </Grid>
                 </Grid>
             </TabItem>
 
-            <TabItem Header="{DynamicResource RunningTab}">
+            <TabItem Header="{DynamicResource RunningTab}" AutomationProperties.AutomationId="RunningTab">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="6,14,6,6">
                         <Border Style="{StaticResource CardBorder}">
@@ -127,8 +138,8 @@
                                     <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
                                 <TextBlock Text="{DynamicResource CurrentTask}" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" />
-                                <TextBlock Grid.Row="1" Text="{Binding CurrentTaskName}" FontSize="30" FontWeight="Bold" TextAlignment="Center" TextWrapping="Wrap" Margin="12,8" />
-                                <TextBlock Grid.Row="2" Text="{Binding RemainingText}" FontFamily="Consolas" FontSize="66" FontWeight="SemiBold" TextAlignment="Center" Margin="0,4,0,12" />
+                                <TextBlock Grid.Row="1" Text="{Binding CurrentTaskName}" FontSize="30" FontWeight="Bold" TextAlignment="Center" TextWrapping="Wrap" Margin="12,8" AutomationProperties.AutomationId="CurrentTaskText" />
+                                <TextBlock Grid.Row="2" Text="{Binding RemainingText}" FontFamily="Consolas" FontSize="66" FontWeight="SemiBold" TextAlignment="Center" Margin="0,4,0,12" AutomationProperties.AutomationId="RemainingText" />
                                 <ProgressBar Grid.Row="3" Height="12" Maximum="100" Value="{Binding ProgressPercent, Mode=OneWay}" />
                             </Grid>
                         </Border>
@@ -139,10 +150,11 @@
                                 Background="#FFF7ED"
                                 BorderBrush="#FED7AA"
                                 BorderThickness="1"
-                                Visibility="{Binding IsAwaitingConfirmation, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                Visibility="{Binding IsAwaitingConfirmation, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                AutomationProperties.AutomationId="ConfirmationPanel">
                             <StackPanel>
                                 <TextBlock Text="轮到这项任务了" FontSize="20" FontWeight="Bold" Foreground="{StaticResource WarningBrush}" HorizontalAlignment="Center" />
-                                <TextBlock Text="{Binding ConfirmationText}" TextWrapping="Wrap" TextAlignment="Center" Margin="0,8,0,14" />
+                                <TextBlock Text="{Binding ConfirmationText}" TextWrapping="Wrap" TextAlignment="Center" Margin="0,8,0,14" AutomationProperties.AutomationId="ConfirmationText" />
                                 <Button x:Name="ConfirmTaskButton"
                                         Content="{DynamicResource ConfirmButton}"
                                         Style="{StaticResource PrimaryButton}"
@@ -150,7 +162,8 @@
                                         Padding="28,13"
                                         HorizontalAlignment="Center"
                                         IsEnabled="{Binding CanConfirm}"
-                                        Click="ConfirmTaskButton_Click" />
+                                        Click="ConfirmTaskButton_Click"
+                                        AutomationProperties.AutomationId="ConfirmTaskButton" />
                             </StackPanel>
                         </Border>
 
@@ -160,7 +173,8 @@
                                 Background="#FFF1F2"
                                 BorderBrush="#FECDD3"
                                 BorderThickness="1"
-                                Visibility="{Binding IsAbsentPaused, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                Visibility="{Binding IsAbsentPaused, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                AutomationProperties.AutomationId="AbsentPausePanel">
                             <TextBlock Text="10 秒内未确认，已判定暂时不在电脑前。轮转已暂停，离开时间不会计入任何任务。"
                                        TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource DangerBrush}" />
                         </Border>
@@ -171,7 +185,8 @@
                                 Background="#FFFBEB"
                                 BorderBrush="#FDE68A"
                                 BorderThickness="1"
-                                Visibility="{Binding IsSystemPaused, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                Visibility="{Binding IsSystemPaused, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                AutomationProperties.AutomationId="SystemPausePanel">
                             <TextBlock Text="系统锁屏、睡眠、会话断开、进程重启或异常计时空档触发了安全暂停。请确认在场后恢复。"
                                        TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource WarningBrush}" />
                         </Border>
@@ -194,16 +209,16 @@
                         </Border>
 
                         <WrapPanel Margin="0,16,0,0" HorizontalAlignment="Center">
-                            <Button Content="{Binding PauseResumeText}" Style="{StaticResource PrimaryButton}" IsEnabled="{Binding CanPauseResume}" Click="PauseResumeButton_Click" />
-                            <Button Content="{DynamicResource SkipSlice}" IsEnabled="{Binding CanSkip}" Click="SkipButton_Click" />
-                            <Button Content="{DynamicResource CompleteEarly}" IsEnabled="{Binding CanComplete}" Click="CompleteButton_Click" />
-                            <Button Content="{DynamicResource StopRotation}" Style="{StaticResource DangerButton}" IsEnabled="{Binding CanStop}" Click="StopButton_Click" />
+                            <Button Content="{Binding PauseResumeText}" Style="{StaticResource PrimaryButton}" IsEnabled="{Binding CanPauseResume}" Click="PauseResumeButton_Click" AutomationProperties.AutomationId="PauseResumeButton" />
+                            <Button Content="{DynamicResource SkipSlice}" IsEnabled="{Binding CanSkip}" Click="SkipButton_Click" AutomationProperties.AutomationId="SkipButton" />
+                            <Button Content="{DynamicResource CompleteEarly}" IsEnabled="{Binding CanComplete}" Click="CompleteButton_Click" AutomationProperties.AutomationId="CompleteButton" />
+                            <Button Content="{DynamicResource StopRotation}" Style="{StaticResource DangerButton}" IsEnabled="{Binding CanStop}" Click="StopButton_Click" AutomationProperties.AutomationId="StopButton" />
                         </WrapPanel>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
 
-            <TabItem Header="{DynamicResource StatisticsTab}">
+            <TabItem Header="{DynamicResource StatisticsTab}" AutomationProperties.AutomationId="StatisticsTab">
                 <Grid Margin="6,14,6,6">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -223,12 +238,13 @@
                                   ItemsSource="{Binding StatisticsScopes}"
                                   DisplayMemberPath="DisplayName"
                                   SelectedValuePath="Key"
-                                  SelectedValue="{Binding SelectedStatisticsScope, Mode=TwoWay}" />
+                                  SelectedValue="{Binding SelectedStatisticsScope, Mode=TwoWay}"
+                                  AutomationProperties.AutomationId="StatisticsScopeComboBox" />
                         <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
                             <TextBlock Text="{DynamicResource TotalRecorded}" Foreground="{StaticResource MutedBrush}" />
                             <TextBlock Text="{Binding StatisticsTotalText}" FontSize="22" FontWeight="Bold" Margin="10,0,0,0" />
                         </StackPanel>
-                        <Button Grid.Column="3" Content="{DynamicResource ExportCsv}" Style="{StaticResource PrimaryButton}" Click="ExportCsvButton_Click" />
+                        <Button Grid.Column="3" Content="{DynamicResource ExportCsv}" Style="{StaticResource PrimaryButton}" Click="ExportCsvButton_Click" AutomationProperties.AutomationId="ExportCsvButton" />
                     </Grid>
 
                     <DataGrid Grid.Row="1" ItemsSource="{Binding StatisticRows}">
@@ -252,17 +268,17 @@
                 </Grid>
             </TabItem>
 
-            <TabItem Header="{DynamicResource SettingsTab}">
+            <TabItem Header="{DynamicResource SettingsTab}" AutomationProperties.AutomationId="SettingsTab">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="6,14,6,6">
                         <Border Style="{StaticResource CardBorder}">
                             <StackPanel>
                                 <TextBlock Text="提醒与窗口" FontSize="19" FontWeight="Bold" Margin="0,0,0,8" />
-                                <CheckBox Content="{DynamicResource AlwaysOnTop}" IsChecked="{Binding AlwaysOnTop, Mode=TwoWay}" />
-                                <CheckBox Content="{DynamicResource PlaySound}" IsChecked="{Binding PlaySound, Mode=TwoWay}" />
-                                <CheckBox Content="{DynamicResource ShowNotification}" IsChecked="{Binding ShowNotification, Mode=TwoWay}" />
-                                <CheckBox Content="{DynamicResource MinimizeToTray}" IsChecked="{Binding MinimizeToTrayOnClose, Mode=TwoWay}" />
-                                <Button Content="{DynamicResource TestNotification}" HorizontalAlignment="Left" Margin="0,12,0,0" Click="TestNotificationButton_Click" />
+                                <CheckBox Content="{DynamicResource AlwaysOnTop}" IsChecked="{Binding AlwaysOnTop, Mode=TwoWay}" AutomationProperties.AutomationId="AlwaysOnTopCheckBox" />
+                                <CheckBox Content="{DynamicResource PlaySound}" IsChecked="{Binding PlaySound, Mode=TwoWay}" AutomationProperties.AutomationId="PlaySoundCheckBox" />
+                                <CheckBox Content="{DynamicResource ShowNotification}" IsChecked="{Binding ShowNotification, Mode=TwoWay}" AutomationProperties.AutomationId="ShowNotificationCheckBox" />
+                                <CheckBox Content="{DynamicResource MinimizeToTray}" IsChecked="{Binding MinimizeToTrayOnClose, Mode=TwoWay}" AutomationProperties.AutomationId="MinimizeToTrayCheckBox" />
+                                <Button Content="{DynamicResource TestNotification}" HorizontalAlignment="Left" Margin="0,12,0,0" Click="TestNotificationButton_Click" AutomationProperties.AutomationId="TestNotificationButton" />
                             </StackPanel>
                         </Border>
 

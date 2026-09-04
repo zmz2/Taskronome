@@ -1,6 +1,7 @@
 <Window x:Class="Taskronome.App.TaskEditorWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        AutomationProperties.AutomationId="TaskEditorWindow"
         Title="{DynamicResource TaskEditorTitle}"
         Width="520"
         Height="485"
@@ -21,15 +22,15 @@
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0" Text="{DynamicResource TaskName}" FontWeight="SemiBold" Margin="0,0,0,7" />
-        <TextBox x:Name="NameTextBox" Grid.Row="1" MaxLength="80" AutomationProperties.Name="任务名称" />
+        <TextBox x:Name="NameTextBox" Grid.Row="1" MaxLength="80" AutomationProperties.Name="任务名称" AutomationProperties.AutomationId="NameTextBox" />
 
         <TextBlock Grid.Row="2" Text="{DynamicResource TimeSlice}" FontWeight="SemiBold" Margin="0,18,0,7" />
         <StackPanel Grid.Row="3" Orientation="Horizontal">
-            <TextBox x:Name="HoursTextBox" Width="64" TextAlignment="Center" MaxLength="2" AutomationProperties.Name="小时" />
+            <TextBox x:Name="HoursTextBox" Width="64" TextAlignment="Center" MaxLength="2" AutomationProperties.Name="小时" AutomationProperties.AutomationId="HoursTextBox" />
             <TextBlock Text="{DynamicResource Hours}" VerticalAlignment="Center" Margin="7,0,16,0" />
-            <TextBox x:Name="MinutesTextBox" Width="64" TextAlignment="Center" MaxLength="2" AutomationProperties.Name="分钟" />
+            <TextBox x:Name="MinutesTextBox" Width="64" TextAlignment="Center" MaxLength="2" AutomationProperties.Name="分钟" AutomationProperties.AutomationId="MinutesTextBox" />
             <TextBlock Text="{DynamicResource Minutes}" VerticalAlignment="Center" Margin="7,0,16,0" />
-            <TextBox x:Name="SecondsTextBox" Width="64" TextAlignment="Center" MaxLength="2" AutomationProperties.Name="秒" />
+            <TextBox x:Name="SecondsTextBox" Width="64" TextAlignment="Center" MaxLength="2" AutomationProperties.Name="秒" AutomationProperties.AutomationId="SecondsTextBox" />
             <TextBlock Text="{DynamicResource Seconds}" VerticalAlignment="Center" Margin="7,0,0,0" />
         </StackPanel>
 
@@ -47,7 +48,8 @@
                      VerticalScrollBarVisibility="Auto"
                      VerticalContentAlignment="Top"
                      MinHeight="100"
-                     AutomationProperties.Name="任务备注" />
+                     AutomationProperties.Name="任务备注"
+                     AutomationProperties.AutomationId="NotesTextBox" />
         </Grid>
 
         <StackPanel Grid.Row="5" Margin="0,14,0,0">
@@ -55,12 +57,13 @@
             <TextBlock x:Name="ValidationTextBlock"
                        Margin="0,7,0,0"
                        Foreground="{StaticResource DangerBrush}"
-                       TextWrapping="Wrap" />
+                       TextWrapping="Wrap"
+                       AutomationProperties.AutomationId="ValidationTextBlock" />
         </StackPanel>
 
         <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
-            <Button Content="{DynamicResource Cancel}" IsCancel="True" Click="CancelButton_Click" />
-            <Button Content="{DynamicResource Save}" Style="{StaticResource PrimaryButton}" IsDefault="True" Click="SaveButton_Click" />
+            <Button Content="{DynamicResource Cancel}" IsCancel="True" Click="CancelButton_Click" AutomationProperties.AutomationId="CancelTaskButton" />
+            <Button Content="{DynamicResource Save}" Style="{StaticResource PrimaryButton}" IsDefault="True" Click="SaveButton_Click" AutomationProperties.AutomationId="SaveTaskButton" />
         </StackPanel>
     </Grid>
 </Window>

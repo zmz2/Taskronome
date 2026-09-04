@@ -59,6 +59,7 @@ def audit(root: Path) -> tuple[dict[str, object], list[str]]:
         "scripts/package.ps1",
         "scripts/bootstrap-and-verify.ps1",
         "scripts/ui-smoke.ps1",
+        "scripts/windows-interactive-acceptance.ps1",
         "src/Taskronome.Core/Taskronome.Core.csproj",
         "src/Taskronome.App/Taskronome.App.csproj",
         "tests/Taskronome.Core.Tests/Taskronome.Core.Tests.csproj",

@@ -50,6 +50,17 @@ pwsh -NoProfile -File .\scripts\verify.ps1
 python .\scripts\assistant-source-audit.py
 ```
 
+最终 Windows 原生交互验收使用同一次 CI 下载并解压的 `Taskronome.exe`，不使用测试模式或通知 dry-run：
+
+```powershell
+pwsh -NoProfile -File .\scripts\windows-interactive-acceptance.ps1 `
+  -AppPath .\ci-artifact\Taskronome.exe `
+  -CommitSha <CI-HEAD> -CiRunId <CI-run-id> `
+  -PackageArtifactId <package-artifact-id> -EvidenceArtifactId <evidence-artifact-id>
+```
+
+该验收脚本为隔离数据目录启动真实生产程序，通过 `System.Windows.Automation` 的 AutomationId 和控件 pattern 完成可自动化检查，并生成 JSON、Markdown、窗口截图、日志、数据快照、SHA-256 清单和证据 ZIP。通知中心、托盘溢出区、锁屏、睡眠、显示缩放和高对比度等需要当前交互桌面或操作者配合的检查，只有在实际执行并留下系统证据后才记为 Pass；确实缺少硬件或权限时记为带理由的 N/A。
+
 构建便携包及按用户安装器：
 
 ```powershell
@@ -64,7 +75,7 @@ pwsh ./scripts/package.ps1 -Version 1.0.0
 src/Taskronome.Core/       与 UI/Windows API 解耦的状态机、计时和持久化
 src/Taskronome.App/        WPF 界面、通知、托盘、单实例和系统事件集成
 tests/                     确定性单元测试与真实短时场景
-scripts/                   一键验证和打包脚本
+scripts/                   一键验证、打包和 Windows UI Automation 验收脚本
 installer/                 Inno Setup 按用户安装器
 docs/                      架构、测试、人工验收与交接说明
 ```

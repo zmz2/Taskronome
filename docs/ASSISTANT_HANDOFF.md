@@ -9,6 +9,7 @@ This document describes the final implementation surface for the Windows handoff
 - `tests/Taskronome.Core.Tests` contains deterministic fake-clock tests for the state machine and persistence boundaries.
 - `tests/Taskronome.ScenarioRunner` is a real-time two-task acceptance scenario using 2-second and 3-second slices.
 - `scripts/bootstrap-and-verify.ps1` is the single local gate. With `-Package` it also creates the portable ZIP, Inno Setup installer, manifest, and checksums.
+- `scripts/windows-interactive-acceptance.ps1` is the reusable production-mode Windows UI Automation/watchdog harness. It targets a supplied CI package executable, uses an isolated data directory, and emits structured manual evidence without a production backdoor.
 - `.github/workflows/ci.yml` runs the same gate on Windows pull requests and development branches. `.github/workflows/release.yml` packages versioned tags.
 
 ## Non-negotiable invariants
@@ -31,7 +32,7 @@ git diff --check
 python .\scripts\assistant-source-audit.py
 ```
 
-The command output and machine-specific results belong in `docs/TEST_REPORT.md`; never turn a not-run manual item into a claim.
+The command output and machine-specific results belong in `docs/TEST_REPORT.md` or the immutable final evidence ZIP; never turn an unexecuted manual item into a claim. Release-blocking results use only Pass, Fail, or evidence-backed N/A.
 
 ## Packaging contract
 
@@ -46,4 +47,4 @@ The portable package excludes PDB files. The installer is per-user (`PrivilegesR
 
 ## Known environment-dependent checks
 
-Real notification-center delivery, notification permission changes, lock/sleep/session disconnect, multi-monitor removal, installer UX, and SmartScreen presentation require an interactive Windows session. The canonical checklist records the exact Windows build, date, tester, evidence path, and Pass/Fail/Not run status for those checks.
+Real notification-center delivery, notification permission changes, lock/sleep/session disconnect, multi-monitor removal, installer UX, and SmartScreen presentation require an interactive Windows session. The canonical checklist and acceptance harness record the exact Windows build, date, tester, evidence path, and Pass/Fail/N/A status for those checks.

@@ -14,7 +14,7 @@ This is the canonical interactive checklist. Record one row per check in the rel
 - Installer SHA-256:
 - Evidence directory:
 
-Use `Pass`, `Fail`, or `Not run` and include a screenshot or log path for every non-trivial check.
+Use `Pass`, `Fail`, or `N/A` and include a screenshot or log path for every non-trivial check. Do not use `Not run` for a release-blocking check; use `N/A` only with concrete hardware, permission, or session evidence.
 
 ## A. Installation and launch
 
