@@ -7,11 +7,11 @@ param(
 
     [string]$CommitSha = '',
 
-    [int]$CiRunId = 0,
+    [long]$CiRunId = 0,
 
-    [int]$PackageArtifactId = 0,
+    [long]$PackageArtifactId = 0,
 
-    [int]$EvidenceArtifactId = 0,
+    [long]$EvidenceArtifactId = 0,
 
     [string]$PortableSha256 = '',
 
@@ -1109,17 +1109,34 @@ function Get-AppNotificationState {
 
     try {
         $appDirectory = Split-Path -Parent $resolvedAppPath
-        foreach ($assemblyPath in @(Get-ChildItem -LiteralPath $appDirectory -Filter '*WindowsAppSDK*.dll' -File -ErrorAction SilentlyContinue)) {
+        $assemblyPaths = [System.Collections.Generic.List[string]]::new()
+        foreach ($candidateName in @(
+                'Microsoft.Windows.SDK.NET.dll',
+                'Microsoft.Windows.AppNotifications*.dll',
+                'Microsoft.WindowsAppSDK*.dll',
+                'WinRT.Runtime.dll')) {
+            foreach ($candidate in @(Get-ChildItem -LiteralPath $appDirectory -Filter $candidateName -File -ErrorAction SilentlyContinue)) {
+                if (-not $assemblyPaths.Contains($candidate.FullName)) {
+                    [void]$assemblyPaths.Add($candidate.FullName)
+                }
+            }
+        }
+
+        foreach ($assemblyFile in $assemblyPaths) {
             try {
-                [Reflection.Assembly]::LoadFrom($assemblyPath.FullName) | Out-Null
-                $result.Assembly = $assemblyPath.Name
-                break
+                [Reflection.Assembly]::LoadFrom($assemblyFile) | Out-Null
+                if ([string]::IsNullOrWhiteSpace($result.Assembly)) {
+                    $result.Assembly = [IO.Path]::GetFileName($assemblyFile)
+                }
             }
             catch [Exception] {
             }
         }
 
-        $managerType = [Type]::GetType('Microsoft.Windows.AppNotifications.AppNotificationManager, Microsoft.WindowsAppSDK')
+        $managerType = [Type]::GetType('Microsoft.Windows.AppNotifications.AppNotificationManager, Microsoft.Windows.SDK.NET', $false)
+        if ($null -eq $managerType) {
+            $managerType = [Type]::GetType('Microsoft.Windows.AppNotifications.AppNotificationManager, Microsoft.WindowsAppSDK', $false)
+        }
         if ($null -eq $managerType) {
             $managerType = [AppDomain]::CurrentDomain.GetAssemblies() |
                 ForEach-Object { $_.GetType('Microsoft.Windows.AppNotifications.AppNotificationManager', $false) } |
@@ -1132,15 +1149,19 @@ function Get-AppNotificationState {
             return [pscustomobject]$result
         }
 
-        $default = $managerType.GetProperty('Default').GetValue($null)
+        $defaultProperty = $managerType.GetProperty('Default')
+        $default = if ($null -eq $defaultProperty) { $null } else { $defaultProperty.GetValue($null) }
         $settingProperty = $managerType.GetProperty('Setting')
-        if ($null -ne $settingProperty) {
+        if ($null -ne $settingProperty -and $null -ne $default) {
             $result.Setting = [string]$settingProperty.GetValue($default)
         }
 
-        $getAllMethod = $managerType.GetMethod('GetAllAsync')
+        $getAllMethod = $managerType.GetMethods([Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static -bor [Reflection.BindingFlags]::Instance) |
+            Where-Object { $_.Name -eq 'GetAllAsync' } |
+            Select-Object -First 1
         if ($null -ne $getAllMethod) {
-            $operation = $getAllMethod.Invoke($default, @())
+            $target = if ($getAllMethod.IsStatic) { $null } else { $default }
+            $operation = $getAllMethod.Invoke($target, @())
             $awaiter = $operation.GetType().GetMethod('GetAwaiter').Invoke($operation, @())
             $notifications = $awaiter.GetType().GetMethod('GetResult').Invoke($awaiter, @())
             $result.GetAllAsync = "returned-$(@($notifications).Count)"
@@ -1383,7 +1404,7 @@ function Get-ButtonEnabled {
 }
 
 function Test-RequiredAutomationIds {
-    $ids = @(
+    $mainIds = @(
         'MainWindow',
         'MainTabs',
         'TasksTab',
@@ -1417,7 +1438,8 @@ function Test-RequiredAutomationIds {
         'MinimizeToTrayCheckBox',
         'TestNotificationButton',
         'StatisticsScopeComboBox',
-        'ExportCsvButton',
+        'ExportCsvButton')
+    $editorIds = @(
         'TaskEditorWindow',
         'NameTextBox',
         'NotesTextBox',
@@ -1430,15 +1452,31 @@ function Test-RequiredAutomationIds {
 
     Select-Tab 'TasksTab'
     $missing = [System.Collections.Generic.List[string]]::new()
-    foreach ($id in $ids) {
-        $element = if ($id -eq 'MainWindow') { $script:window } else { Find-ElementByIdAnyWindow $id -TimeoutSeconds 3 -Optional }
+    foreach ($id in $mainIds) {
+        $element = if ($id -eq 'MainWindow') { $script:window } else { Find-ElementById $id -TimeoutSeconds 3 -Optional }
         if ($null -eq $element) {
             [void]$missing.Add($id)
         }
     }
 
+    if ($missing.Count -eq 0) {
+        Invoke-ButtonById 'NewTaskButton' | Out-Null
+        [void](Wait-Editor)
+        foreach ($id in $editorIds) {
+            $element = Find-ElementByIdAnyWindow $id -TimeoutSeconds 3 -Optional
+            if ($null -eq $element) {
+                [void]$missing.Add($id)
+            }
+        }
+
+        $cancelButton = Find-ElementByIdAnyWindow 'CancelTaskButton' -TimeoutSeconds 1 -Optional
+        if ($null -ne $cancelButton -and $cancelButton.Current.IsEnabled) {
+            Invoke-Element $cancelButton
+        }
+    }
+
     Assert-Equal 0 $missing.Count 'Required AutomationId controls were missing.'
-    return "located-$($ids.Count)-controls"
+    return "located-$($mainIds.Count + $editorIds.Count)-controls"
 }
 
 function Run-DataAndUiFlow {
